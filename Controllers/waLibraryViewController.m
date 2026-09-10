@@ -3,6 +3,7 @@
 #import "../Services/waTheme.h"
 #import "../Services/waAudioPlayer.h"
 #import "../Services/waImageLoader.h"
+#import "../Services/waDebugLog.h"
 #import "../Views/waHomeSectionView.h"
 #import "../Views/waArtworkCell.h"
 #import "../Views/waEmptyView.h"
@@ -285,17 +286,29 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
     if (!hasQuery) return pool;
     NSMutableArray *matched = [NSMutableArray array];
     for (waMediaItem *item in pool) {
-        if (item.title && [item.title rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound) {
-            [matched addObject:item];
-        }
+        if ([self item:item matchesQuery:query]) [matched addObject:item];
     }
+    [[waDebugLog sharedLog] log:@"LIB filter segment=%ld query=%@ pool=%lu (songs=%lu) matched=%lu",
+     (long)filter, query, (unsigned long)pool.count, (unsigned long)self.songs.count, (unsigned long)matched.count];
     return matched;
+}
+
+// A track is only reachable by its own title unless we also match the artist
+// and album, which is what users expect when they search a performer.
+- (BOOL)item:(waMediaItem *)item matchesQuery:(NSString *)query {
+    if (![item isKindOfClass:[waMediaItem class]]) return NO;
+    if (item.title.length && [item.title rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    NSString *artist = item.artistName.length ? item.artistName : item.subtitle;
+    if (artist.length && [artist rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    if (item.albumName.length && [item.albumName rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    return NO;
 }
 
 - (void)updateContent {
     if (![[waAPIClient sharedClient] isAuthenticated]) { [self showAuthRequired]; return; }
     self.emptyView.hidden = YES;
-    BOOL hasAny = (self.albums.count + self.artists.count + self.playlists.count) > 0;
+    // Songs count too: a songs-only library must still reach the search path.
+    BOOL hasAny = (self.albums.count + self.artists.count + self.playlists.count + self.songs.count) > 0;
     if (self.loading && !hasAny) {
         [self.emptyView configureWithIcon:[UIImage imageNamed:@"tab-wave-library"]
                                     title:@"Library"
