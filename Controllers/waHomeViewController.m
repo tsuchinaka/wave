@@ -190,7 +190,13 @@ static dispatch_queue_t waHomeCacheQueue(void) {
 - (void)applyHomeSource:(NSDictionary *)source failedWithError:(BOOL)failed {
     NSArray *sections = [source[@"sections"] isKindOfClass:[NSArray class]] ? source[@"sections"] : @[];
     NSMutableArray *usable = [NSMutableArray array];
-    for (NSDictionary *section in sections) if ([self mediaItemsFromSection:section].count) [usable addObject:section];
+    // Only test for presence here. Building the waMediaItem array just to
+    // discard it doubled the model conversion on every Home load.
+    for (NSDictionary *section in sections) {
+        if (![section isKindOfClass:[NSDictionary class]]) continue;
+        NSArray *items = [section[@"items"] isKindOfClass:[NSArray class]] ? section[@"items"] : nil;
+        if (items.count) [usable addObject:section];
+    }
     self.sections = usable;
     self.loadingHome = NO;
     [self.emptyView setLoading:NO];

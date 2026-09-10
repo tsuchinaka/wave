@@ -17,6 +17,16 @@
 @property (nonatomic, assign) BOOL artistCard;
 @property (nonatomic, assign) BOOL playlistCard;
 @property (nonatomic, assign) BOOL landscapeLayout;
+// sizeWithFont runs from both preferredHeightForWidth: and layoutSubviews.
+// Cache the last measurement so repeated layout passes do not re-measure.
+@property (nonatomic, copy) NSString *measuredTitleText;
+@property (nonatomic, strong) UIFont *measuredTitleFont;
+@property (nonatomic, assign) CGFloat measuredTitleWidth;
+@property (nonatomic, assign) CGFloat measuredTitleHeight;
+@property (nonatomic, copy) NSString *measuredSubtitleText;
+@property (nonatomic, strong) UIFont *measuredSubtitleFont;
+@property (nonatomic, assign) CGFloat measuredSubtitleWidth;
+@property (nonatomic, assign) CGFloat measuredSubtitleHeight;
 @end
 
 @implementation waCatalogInfoCard
@@ -154,14 +164,30 @@
 
 - (CGFloat)titleHeightForWidth:(CGFloat)width {
     if (self.artistCard) return 26.0;
-    CGSize size = [self.titleLabel.text sizeWithFont:self.titleLabel.font constrainedToSize:CGSizeMake(MAX(40.0, width), 160.0) lineBreakMode:NSLineBreakByWordWrapping];
-    return MAX(26.0, ceil(size.height));
+    NSString *text = self.titleLabel.text;
+    UIFont *font = self.titleLabel.font;
+    if ([text isEqualToString:self.measuredTitleText] && font == self.measuredTitleFont && fabs(width - self.measuredTitleWidth) < 0.5) return self.measuredTitleHeight;
+    CGSize size = [text sizeWithFont:font constrainedToSize:CGSizeMake(MAX(40.0, width), 160.0) lineBreakMode:NSLineBreakByWordWrapping];
+    CGFloat height = MAX(26.0, ceil(size.height));
+    self.measuredTitleText = [text copy];
+    self.measuredTitleFont = font;
+    self.measuredTitleWidth = width;
+    self.measuredTitleHeight = height;
+    return height;
 }
 
 - (CGFloat)subtitleHeightForWidth:(CGFloat)width {
     if (!self.playlistCard) return 19.0;
-    CGSize size = [self.subtitleLabel.text sizeWithFont:self.subtitleLabel.font constrainedToSize:CGSizeMake(MAX(40.0, width), 48.0) lineBreakMode:NSLineBreakByWordWrapping];
-    return MAX(19.0, MIN(42.0, ceil(size.height)));
+    NSString *text = self.subtitleLabel.text;
+    UIFont *font = self.subtitleLabel.font;
+    if ([text isEqualToString:self.measuredSubtitleText] && font == self.measuredSubtitleFont && fabs(width - self.measuredSubtitleWidth) < 0.5) return self.measuredSubtitleHeight;
+    CGSize size = [text sizeWithFont:font constrainedToSize:CGSizeMake(MAX(40.0, width), 48.0) lineBreakMode:NSLineBreakByWordWrapping];
+    CGFloat height = MAX(19.0, MIN(42.0, ceil(size.height)));
+    self.measuredSubtitleText = [text copy];
+    self.measuredSubtitleFont = font;
+    self.measuredSubtitleWidth = width;
+    self.measuredSubtitleHeight = height;
+    return height;
 }
 
 - (void)layoutSubviews {

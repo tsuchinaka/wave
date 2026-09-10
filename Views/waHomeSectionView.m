@@ -84,11 +84,10 @@
     self.layout = section[@"layout"] ?: @"square";
     self.selection = selection;
     self.moreButton.hidden = ![section[@"showsMore"] boolValue];
-    [self.collectionView reloadData];
-    // Mark for a forced re-layout: if this view is inside a UITableViewCell the
-    // collection view just reloaded against a zero frame and cached an empty
-    // visible rect. layoutSubviews will re-drive it once a real width exists.
-    if (normalizedItems.count) self.needsForcedCollectionReload = YES;
+    // Defer the single reload to layoutSubviews. Inside a table cell the
+    // collection view still has a zero/stale frame at configure time, so
+    // reloading here forced a second reload once the real width was known.
+    self.needsForcedCollectionReload = YES;
     [self setNeedsLayout];
 }
 
@@ -139,10 +138,9 @@
         flow.itemSize = itemSize;
         [flow invalidateLayout];
     }
-    // UICollectionView nested in a UITableViewCell: the first reloadData ran with
-    // a zero frame and produced no visible cells. Once we have a real width and
-    // pending content, force one more reload so the cards actually appear.
-    if (self.needsForcedCollectionReload && CGRectGetWidth(self.collectionView.frame) > 0 && self.items.count > 0) {
+    // Single deferred reload once the collection view has a real width. Also
+    // runs for empty sections so recycled cells cannot keep stale cards.
+    if (self.needsForcedCollectionReload && CGRectGetWidth(self.collectionView.frame) > 0) {
         self.needsForcedCollectionReload = NO;
         [self.collectionView reloadData];
     }

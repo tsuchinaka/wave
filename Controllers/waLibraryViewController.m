@@ -46,6 +46,11 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 @property (nonatomic, assign) NSUInteger loadGeneration;
 @property (nonatomic, strong) NSArray *filteredItems;
 @property (nonatomic, strong) NSTimer *filterDebounceTimer;
+// Identity of the arrays currently rendered into shelves. Lets a repeated
+// viewWillAppear lay out existing shelves instead of rebuilding them.
+@property (nonatomic, strong) NSArray *renderedAlbums;
+@property (nonatomic, strong) NSArray *renderedArtists;
+@property (nonatomic, strong) NSArray *renderedPlaylists;
 @end
 
 @implementation waLibraryViewController
@@ -326,8 +331,19 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
         self.filteredItems = nil;
         self.resultsTableView.hidden = YES;
         self.scrollView.hidden = NO;
-        [self renderShelves];
+        [self renderShelvesIfContentChanged];
     }
+}
+
+- (void)renderShelvesIfContentChanged {
+    NSArray *albums = self.albums ?: @[];
+    NSArray *artists = self.artists ?: @[];
+    NSArray *playlists = self.playlists ?: @[];
+    if (self.shelves.count && self.renderedAlbums == albums && self.renderedArtists == artists && self.renderedPlaylists == playlists) {
+        [self layoutShelves];
+        return;
+    }
+    [self renderShelves];
 }
 
 #pragma mark - Shelves
@@ -371,6 +387,9 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
         [self.shelves addObject:shelf];
         y += [shelf preferredHeight] + 10.0;
     }
+    self.renderedAlbums = self.albums ?: @[];
+    self.renderedArtists = self.artists ?: @[];
+    self.renderedPlaylists = self.playlists ?: @[];
     [self layoutShelves];
 }
 
