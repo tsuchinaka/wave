@@ -313,9 +313,20 @@ static UIImage *waSegmentDividerImage(void) {
     return themes;
 }
 
+// Resolved once and invalidated by waPreferences when the theme changes.
+// Every cell color getter funnels through here, so re-reading defaults and
+// scanning the theme list on each call was pure overhead during scrolling.
+static NSString *waThemeNormalizedNameCache;
+
 + (NSString *)normalizedThemeName {
+    if (waThemeNormalizedNameCache) return waThemeNormalizedNameCache;
     NSString *theme = [[waPreferences sharedPreferences].theme copy];
-    return [[self availableThemes] containsObject:theme] ? theme : @"Dark purple";
+    waThemeNormalizedNameCache = [[self availableThemes] containsObject:theme] ? theme : @"Dark purple";
+    return waThemeNormalizedNameCache;
+}
+
++ (void)invalidateThemeCache {
+    waThemeNormalizedNameCache = nil;
 }
 
 + (UIColor *)barColor {

@@ -34,6 +34,20 @@ static dispatch_queue_t waDeezerParseDispatchQueue(void) {
     return queue;
 }
 
+// Search uses a delegate-based connection so it can be cancelled. Without a
+// delegate queue its callbacks ran on the main run loop, so appending a large
+// search response blocked scrolling (and stalled in UITrackingRunLoopMode).
+// A serial queue keeps receivedData appends ordered.
+static NSOperationQueue *waDeezerSearchDelegateQueue(void) {
+    static NSOperationQueue *queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        queue = [[NSOperationQueue alloc] init];
+        queue.maxConcurrentOperationCount = 1;
+    });
+    return queue;
+}
+
 static void waDeezerDispatchMain(void (^block)(void)) {
     if (!block) return;
     if ([NSThread isMainThread]) block();
@@ -973,7 +987,12 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
         [task addCompletion:completion];
         [_searchTasks addObject:task];
     }
-    task.connection = [[NSURLConnection alloc] initWithRequest:waDeezerRequest(url, NSURLRequestUseProtocolCachePolicy) delegate:task startImmediately:YES];
+    task.connection = [[NSURLConnection alloc] initWithRequest:waDeezerRequest(url, NSURLRequestUseProtocolCachePolicy) delegate:task startImmediately:NO];
+    if (task.connection) {
+        // Deliver callbacks off the main thread; see waDeezerSearchDelegateQueue.
+        [task.connection setDelegateQueue:waDeezerSearchDelegateQueue()];
+        [task.connection start];
+    }
     if (!task.connection) {
         [[waDebugLog sharedLog] log:@"Deezer search could not start: %@", key];
         [task completeWithItems:nil error:[self errorWithMessage:@"Deezer search failed." code:500]];

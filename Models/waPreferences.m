@@ -71,7 +71,7 @@ static NSString * const waCompStrengthKey = @"wa.comp.strength";
     NSArray *themes = [waTheme availableThemes];
     return [themes containsObject:theme] ? theme : @"Dark purple";
 }
-- (void)setTheme:(NSString *)value { [[self defaults] setObject:value forKey:waThemeKey]; [[NSNotificationCenter defaultCenter] postNotificationName:waThemeDidChangeNotification object:nil]; }
+- (void)setTheme:(NSString *)value { [[self defaults] setObject:value forKey:waThemeKey]; [waTheme invalidateThemeCache]; [[NSNotificationCenter defaultCenter] postNotificationName:waThemeDidChangeNotification object:nil]; }
 - (BOOL)cellularDataAllowed { return [[self defaults] objectForKey:waCellularKey] ? [[self defaults] boolForKey:waCellularKey] : YES; }
 - (void)setCellularDataAllowed:(BOOL)value { [[self defaults] setBool:value forKey:waCellularKey]; }
 - (BOOL)privateSession { return [[self defaults] boolForKey:waPrivateKey]; }

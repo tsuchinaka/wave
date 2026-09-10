@@ -508,9 +508,12 @@ NSString *waFileSizeString(unsigned long long bytes) {
     waDownloadConnectionContext *context = [self contextForConnection:connection];
     if (!context || [context isCancelled]) return;
     __block BOOL wrote = YES;
-    NSData *chunk = [data copy];
+    // The delegate's NSData stays valid for the duration of this call and the
+    // file write below is synchronous, so only the decrypt path needs to
+    // allocate a replacement buffer.
+    NSData *chunk = data;
     if (context.deezerDecrypt && context.deezerKeyData.length == 16) {
-        [context.decryptRemainder appendData:chunk];
+        [context.decryptRemainder appendData:data];
         NSMutableData *plain = [NSMutableData data];
         const unsigned char *key = (const unsigned char *)context.deezerKeyData.bytes;
         while (context.decryptRemainder.length >= 2048) {

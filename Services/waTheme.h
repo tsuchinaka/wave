@@ -4,6 +4,7 @@ extern NSString * const waThemeDidChangeNotification;
 
 @interface waTheme : NSObject
 + (NSArray *)availableThemes;
++ (void)invalidateThemeCache;
 + (UIColor *)backgroundColor;
 + (UIColor *)barColor;
 + (UIColor *)primaryTextColor;
