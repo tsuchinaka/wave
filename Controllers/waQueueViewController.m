@@ -360,10 +360,17 @@
 - (void)clearUpcomingWithAnimation {
     waAudioPlayer *player = [waAudioPlayer sharedPlayer];
     if (!player.currentItem || player.queueIndex >= player.queueItems.count || player.queueItems.count < 2) return;
-    NSUInteger firstRemovedRow = player.queueIndex + 1;
+    // clearUpcomingQueue collapses the queue to just the current song, which
+    // then moves to row 0. Delete every other row (not only the rows after the
+    // current one) so the resulting row count matches the model and UIKit does
+    // not abort with an invalid-update inconsistency.
+    NSUInteger currentRow = player.queueIndex;
     NSUInteger oldCount = player.queueItems.count;
-    NSMutableArray *paths = [NSMutableArray arrayWithCapacity:oldCount - firstRemovedRow];
-    for (NSUInteger row = firstRemovedRow; row < oldCount; row++) [paths addObject:[NSIndexPath indexPathForRow:row inSection:0]];
+    NSMutableArray *paths = [NSMutableArray arrayWithCapacity:oldCount - 1];
+    for (NSUInteger row = 0; row < oldCount; row++) {
+        if (row == currentRow) continue;
+        [paths addObject:[NSIndexPath indexPathForRow:row inSection:0]];
+    }
     [self beginTableMutation];
     [player clearUpcomingQueue];
     [self.tableView beginUpdates];
