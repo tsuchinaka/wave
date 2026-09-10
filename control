@@ -1,0 +1,8 @@
+Package: com.bytebox.wave
+Name: wave
+Version: 0.1.9
+Architecture: iphoneos-arm
+Description: An awesome application!
+Maintainer: tsu
+Author: tsu
+Section: Utilities
