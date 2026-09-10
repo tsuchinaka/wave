@@ -58,6 +58,9 @@
 @property (nonatomic, strong) dispatch_queue_t cacheIOQueue;
 @property (nonatomic, assign) NSUInteger cacheGeneration;
 @property (nonatomic, assign) unsigned long long cachedBytesValue;
+@property (nonatomic, assign) NSUInteger appliedMemoryLimitMB;
+@property (nonatomic, assign) BOOL didApplyMemoryLimit;
+@property (nonatomic, strong) dispatch_queue_t trimQueue;
 - (void)startWaitingDownloads;
 @end
 
@@ -149,17 +152,26 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
         _waitingDownloads = [NSMutableArray array];
         _activeDownloads = [NSMutableArray array];
         _cacheIOQueue = dispatch_queue_create("com.bytebox.wave.images.cache", DISPATCH_QUEUE_SERIAL);
+        // Trimming scans and stats the whole directory. Run it away from the
+        // read/write queue so an in-progress decode is never blocked behind it.
+        _trimQueue = dispatch_queue_create("com.bytebox.wave.images.trim", DISPATCH_QUEUE_SERIAL);
         NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
         _directory = [[paths objectAtIndex:0] stringByAppendingPathComponent:@"wa.images.v2"];
         [[NSFileManager defaultManager] createDirectoryAtPath:_directory withIntermediateDirectories:YES attributes:nil error:NULL];
         [self updateMemoryLimit];
-        dispatch_async(_cacheIOQueue, ^{ [self trimDiskCache]; self.cachedBytesValue = [self diskBytes]; });
+        dispatch_async(_trimQueue, ^{ [self trimDiskCache]; });
     }
     return self;
 }
 
 - (void)updateMemoryLimit {
-    unsigned long long bytes = (unsigned long long)[waPreferences sharedPreferences].cacheSizeMB * 1024ULL * 1024ULL;
+    NSUInteger megabytes = [waPreferences sharedPreferences].cacheSizeMB;
+    // Reassigning totalCostLimit on every artwork load made NSCache re-scan
+    // its cost bookkeeping during scrolling. Only apply real changes.
+    if (self.didApplyMemoryLimit && megabytes == self.appliedMemoryLimitMB) return;
+    self.appliedMemoryLimitMB = megabytes;
+    self.didApplyMemoryLimit = YES;
+    unsigned long long bytes = (unsigned long long)megabytes * 1024ULL * 1024ULL;
     // Keep the disk cache configurable, but cap decoded images in RAM for
     // legacy devices with small working sets.
     bytes = MIN(bytes, waImageMemoryLimit);
@@ -307,7 +319,10 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
     }
     if (!shouldStart) return;
 
-    NSString *highQualityURL = [self highQualityURL:url];
+    // Rewriting the URL is 3 regex passes plus string allocations. It is only
+    // useful when a high-quality fallback is allowed, so skip it for the
+    // common thumbnail path.
+    NSString *highQualityURL = allowFallback ? [self highQualityURL:url] : url;
     NSArray *candidates = (allowFallback && ![highQualityURL isEqualToString:url]) ? @[url, highQualityURL] : @[url];
     [self loadCandidateAtIndex:0 candidates:candidates originalURL:cacheKey maxPixelSize:maxPixelSize generation:generation loadedData:nil sourceURL:nil];
 }
@@ -412,20 +427,29 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
         NSString *path = [self pathForURL:url];
         NSDictionary *oldAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL];
         unsigned long long oldSize = [oldAttributes[NSFileSize] unsignedLongLongValue];
-        if ([data writeToFile:path atomically:YES]) {
-            self.cachedBytesValue = self.cachedBytesValue >= oldSize ? self.cachedBytesValue - oldSize : 0;
-            self.cachedBytesValue += data.length;
-            unsigned long long limit = waImageDiskCacheLimitBytes();
-            unsigned long long threshold = limit + MAX((unsigned long long)1, limit / 10ULL);
-            if (!limit) {
-                [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
-                self.cachedBytesValue = 0;
-            } else if (self.cachedBytesValue > threshold) {
-                [self trimDiskCache];
-                self.cachedBytesValue = [self diskBytes];
-            }
+        if (![data writeToFile:path atomically:YES]) return;
+        unsigned long long current = [self cachedBytesValueSafe];
+        current = current >= oldSize ? current - oldSize : 0;
+        current += data.length;
+        [self setCachedBytesValueSafe:current];
+        unsigned long long limit = waImageDiskCacheLimitBytes();
+        if (!limit) {
+            [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+            [self setCachedBytesValueSafe:0];
+            return;
         }
+        unsigned long long threshold = limit + MAX((unsigned long long)1, limit / 10ULL);
+        // Never trim inline: the scan/stat pass must not stall the decode queue.
+        if (current > threshold) dispatch_async(self.trimQueue, ^{ [self trimDiskCache]; });
     });
+}
+
+- (unsigned long long)cachedBytesValueSafe {
+    @synchronized (self) { return self.cachedBytesValue; }
+}
+
+- (void)setCachedBytesValueSafe:(unsigned long long)value {
+    @synchronized (self) { self.cachedBytesValue = value; }
 }
 
 - (unsigned long long)diskBytes {
@@ -443,10 +467,11 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
     if (!limit) {
         [[NSFileManager defaultManager] removeItemAtPath:self.directory error:NULL];
         [[NSFileManager defaultManager] createDirectoryAtPath:self.directory withIntermediateDirectories:YES attributes:nil error:NULL];
+        [self setCachedBytesValueSafe:0];
         return;
     }
     unsigned long long total = [self diskBytes];
-    if (total <= limit) return;
+    if (total <= limit) { [self setCachedBytesValueSafe:total]; return; }
     NSMutableArray *files = [NSMutableArray array];
     NSDirectoryEnumerator *enumerator = [[NSFileManager defaultManager] enumeratorAtPath:self.directory];
     for (NSString *file in enumerator) {
@@ -460,6 +485,7 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
         [[NSFileManager defaultManager] removeItemAtPath:file[@"path"] error:NULL];
         total = total > [file[@"size"] unsignedLongLongValue] ? total - [file[@"size"] unsignedLongLongValue] : 0;
     }
+    [self setCachedBytesValueSafe:total];
 }
 
 - (void)clearCache {
@@ -467,10 +493,7 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
 }
 
 - (void)trimCache {
-    dispatch_async(self.cacheIOQueue, ^{
-        [self trimDiskCache];
-        self.cachedBytesValue = [self diskBytes];
-    });
+    dispatch_async(self.trimQueue, ^{ [self trimDiskCache]; });
 }
 
 - (void)clearCacheWithCompletion:(void (^)(void))completion {
@@ -491,15 +514,13 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
     dispatch_async(self.cacheIOQueue, ^{
         [[NSFileManager defaultManager] removeItemAtPath:self.directory error:NULL];
         [[NSFileManager defaultManager] createDirectoryAtPath:self.directory withIntermediateDirectories:YES attributes:nil error:NULL];
-        self.cachedBytesValue = 0;
+        [self setCachedBytesValueSafe:0];
         if (completion) dispatch_async(dispatch_get_main_queue(), completion);
     });
 }
 
 - (unsigned long long)cachedBytes {
-    __block unsigned long long value = 0;
-    dispatch_sync(self.cacheIOQueue, ^{ value = self.cachedBytesValue; });
-    return value;
+    return [self cachedBytesValueSafe];
 }
 
 @end

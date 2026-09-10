@@ -45,6 +45,7 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 @property (nonatomic, assign) BOOL loading;
 @property (nonatomic, assign) NSUInteger loadGeneration;
 @property (nonatomic, strong) NSArray *filteredItems;
+@property (nonatomic, strong) NSTimer *filterDebounceTimer;
 @end
 
 @implementation waLibraryViewController
@@ -554,13 +555,29 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 
 #pragma mark - UISearchBarDelegate
 
-- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
-    (void)searchBar; (void)searchText;
+- (void)scheduleFilterDebounce {
+    [self.filterDebounceTimer invalidate];
+    // Local filtering over a large library is O(pool) plus reloadData. Match
+    // Search's debounce instead of recomputing on every keystroke.
+    self.filterDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 target:self selector:@selector(filterDebounceFired:) userInfo:nil repeats:NO];
+}
+
+- (void)filterDebounceFired:(NSTimer *)timer {
+    if (timer != self.filterDebounceTimer) return;
+    self.filterDebounceTimer = nil;
     [self applyFilter];
 }
 
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    (void)searchBar; (void)searchText;
+    [self scheduleFilterDebounce];
+}
+
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [self.filterDebounceTimer invalidate];
+    self.filterDebounceTimer = nil;
     [searchBar resignFirstResponder];
+    [self applyFilter];
 }
 
 - (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
@@ -572,6 +589,8 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 }
 
 - (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    [self.filterDebounceTimer invalidate];
+    self.filterDebounceTimer = nil;
     searchBar.text = @"";
     searchBar.showsCancelButton = NO;
     [searchBar resignFirstResponder];
@@ -633,6 +652,7 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 }
 
 - (void)dealloc {
+    [self.filterDebounceTimer invalidate];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     for (waHomeSectionView *shelf in self.shelves) [shelf clearCallbacks];
 }

@@ -236,6 +236,12 @@ static NSString *waCatalogDurationText(NSTimeInterval duration) {
     [self setNeedsLayout];
 }
 
+- (void)refreshLikeState {
+    waMediaItem *item = self.trackItem;
+    self.likeButton.selected = item.isLiked;
+    self.likeButton.accessibilityLabel = item.isLiked ? @"Unlike song" : @"Like song";
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat width = CGRectGetWidth(self.contentView.bounds);

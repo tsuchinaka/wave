@@ -14,5 +14,6 @@
 - (void)configureWithItem:(waMediaItem *)item artistName:(NSString *)artistName albumName:(NSString *)albumName trackNumber:(NSUInteger)trackNumber;
 - (void)configureForPlaylistItem:(waMediaItem *)item artistName:(NSString *)artistName;
 - (void)setDownloadState:(waDownloadState)state progress:(float)progress;
+- (void)refreshLikeState;
 - (void)applyTheme;
 @end

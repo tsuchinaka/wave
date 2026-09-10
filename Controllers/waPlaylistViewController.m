@@ -21,6 +21,8 @@
 @property (nonatomic, strong) NSDictionary *playlist;
 @property (nonatomic, strong) NSArray *items;
 @property (nonatomic, assign) BOOL downloadReloadScheduled;
+@property (nonatomic, strong) NSNumber *tracksDownloadedFlag;
+@property (nonatomic, copy) NSString *pendingProgressDownloadIdentifier;
 @property (nonatomic, assign) NSUInteger requestGeneration;
 @property (nonatomic, assign) BOOL ownerIsCurrentUser;
 @property (nonatomic, strong) waMediaItem *pendingRemovalItem;
@@ -252,7 +254,8 @@ static BOOL waPlaylistTracksAreDownloaded(NSArray *tracks) {
     self.infoCard.downloadButton.hidden = NO;
     self.infoCard.playAllButton.hidden = NO;
     self.infoCard.playAllButton.enabled = self.items.count > 0;
-    [self.infoCard.downloadButton setTitle:waPlaylistTracksAreDownloaded(self.items) ? @"Downloaded" : @"Download" forState:UIControlStateNormal];
+    if (!self.tracksDownloadedFlag) self.tracksDownloadedFlag = @(waPlaylistTracksAreDownloaded(self.items));
+    [self.infoCard.downloadButton setTitle:self.tracksDownloadedFlag.boolValue ? @"Downloaded" : @"Download" forState:UIControlStateNormal];
     [self loadPlaylistArtworkForItem:item];
     [self layoutInfoCard];
 }
@@ -376,7 +379,7 @@ static BOOL waPlaylistTracksAreDownloaded(NSArray *tracks) {
         } else {
             [[NSNotificationCenter defaultCenter] postNotificationName:waMediaLikeDidChangeNotification object:item userInfo:@{waMediaLikeIdentifierKey: item.identifier ?: @"", waMediaLikeTypeKey: @(item.type)}];
         }
-        [self.tracksTableView reloadData];
+        [cell refreshLikeState];
     }];
 }
 
@@ -432,16 +435,43 @@ static BOOL waPlaylistTracksAreDownloaded(NSArray *tracks) {
 - (void)downloadStateDidChange:(NSNotification *)notification {
     if (!self.view.window || self.downloadReloadScheduled) return;
     self.downloadReloadScheduled = YES;
-    NSTimeInterval delay = [notification.userInfo[@"event"] isEqualToString:@"progress"] ? 0.4 : 0.12;
+    self.pendingProgressDownloadIdentifier = notification.userInfo[@"identifier"] ?: @"";
+    BOOL progress = [notification.userInfo[@"event"] isEqualToString:@"progress"];
+    NSTimeInterval delay = progress ? 0.4 : 0.12;
     [self performSelector:@selector(reloadDownloadTable) withObject:nil afterDelay:delay];
+}
+
+// Refresh only the row whose download changed instead of reloading the whole
+// playlist on every download event.
+- (void)refreshDownloadRowForIdentifier:(NSString *)identifier {
+    if (!identifier.length) { [self.tracksTableView reloadData]; return; }
+    NSString *clean = [identifier hasPrefix:@"deezer:"] ? [identifier substringFromIndex:7] : identifier;
+    NSInteger row = NSNotFound;
+    for (NSUInteger index = 0; index < self.items.count; index++) {
+        waMediaItem *track = self.items[index];
+        NSString *trackID = track.trackId.length ? track.trackId : track.identifier;
+        if ([trackID isEqualToString:clean] || [trackID isEqualToString:identifier]) { row = (NSInteger)index; break; }
+    }
+    if (row == NSNotFound) return;
+    NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:0];
+    waCatalogTrackCell *cell = (waCatalogTrackCell *)[self.tracksTableView cellForRowAtIndexPath:path];
+    if (![cell isKindOfClass:[waCatalogTrackCell class]]) return;
+    waDownload *download = [[waDownloadManager sharedManager] downloadForIdentifier:clean];
+    [cell setDownloadState:download ? download.state : waDownloadStateNotFound progress:download.progress];
 }
 
 - (void)reloadDownloadTable {
     self.downloadReloadScheduled = NO;
-    if (self.view.window) {
-        [self updateInfoCard];
-        [self.tracksTableView reloadData];
-    }
+    if (!self.view.window) return;
+    self.tracksDownloadedFlag = nil;
+    [self downloadButtonRefreshTitle];
+    [self refreshDownloadRowForIdentifier:self.pendingProgressDownloadIdentifier];
+    self.pendingProgressDownloadIdentifier = nil;
+}
+
+- (void)downloadButtonRefreshTitle {
+    if (!self.tracksDownloadedFlag) self.tracksDownloadedFlag = @(waPlaylistTracksAreDownloaded(self.items));
+    [self.infoCard.downloadButton setTitle:self.tracksDownloadedFlag.boolValue ? @"Downloaded" : @"Download" forState:UIControlStateNormal];
 }
 
 - (void)handleLongPress:(UILongPressGestureRecognizer *)gesture {

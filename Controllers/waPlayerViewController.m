@@ -347,8 +347,11 @@ static UIButton *waFirstRouteButtonInView(UIView *view) {
     [airplayContainer addSubview:self.airplayButton];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:airplayContainer];
 
+    // waAudioPlayer re-emits every engine state change as
+    // waAudioPlayerDidChangeNotification (waAudioPlayer+Engine.m:44), so one
+    // observer is enough. Subscribing to both refreshed the whole Player UI
+    // twice per play/pause/seek.
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerDidChange:) name:waAudioPlayerDidChangeNotification object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerDidChange:) name:waAudioEngineStateDidChangeNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerDidFail:) name:waAudioEngineDidFailNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(themeDidChange:) name:waThemeDidChangeNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(audioRouteDidChange:) name:AVAudioSessionRouteChangeNotification object:nil];

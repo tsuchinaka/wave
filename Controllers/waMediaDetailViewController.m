@@ -31,6 +31,8 @@
 @property (nonatomic, assign) NSUInteger catalogTrackCount;
 @property (nonatomic, assign) NSUInteger requestGeneration;
 @property (nonatomic, assign) BOOL downloadReloadScheduled;
+@property (nonatomic, strong) NSNumber *tracksDownloadedFlag;
+@property (nonatomic, copy) NSString *pendingProgressDownloadIdentifier;
 @property (nonatomic, assign) BOOL hasLaidOut;
 @property (nonatomic, assign) BOOL lastLayoutLandscape;
 @end
@@ -228,7 +230,10 @@ static BOOL waCatalogTracksAreDownloaded(NSArray *tracks) {
     }
     [self.infoCard configureWithItem:self.mediaItem listenerText:self.listenerText detailText:detail];
     self.infoCard.playAllButton.enabled = self.tracks.count > 0;
-    [self.infoCard.downloadButton setTitle:waCatalogTracksAreDownloaded(self.tracks) ? @"Downloaded" : @"Download" forState:UIControlStateNormal];
+    // Probing every track hits the filesystem; compute once and invalidate on
+    // real download state changes instead of on every info-card refresh.
+    if (!self.tracksDownloadedFlag) self.tracksDownloadedFlag = @(waCatalogTracksAreDownloaded(self.tracks));
+    [self.infoCard.downloadButton setTitle:self.tracksDownloadedFlag.boolValue ? @"Downloaded" : @"Download" forState:UIControlStateNormal];
     [self updateCatalogTrackHeader];
     self.title = self.mediaItem.title ?: @"Catalog";
     [self layoutInfoCard];
@@ -432,7 +437,7 @@ static BOOL waCatalogTracksAreDownloaded(NSArray *tracks) {
         if (!success) {
             item.liked = !liked;
             [[[UIAlertView alloc] initWithTitle:@"Like" message:error.localizedDescription ?: @"Unable to update like." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
-            [self.catalogTableView reloadData];
+            [cell refreshLikeState];
             return;
         }
         [[NSNotificationCenter defaultCenter] postNotificationName:waMediaLikeDidChangeNotification object:item userInfo:@{waMediaLikeIdentifierKey: item.identifier ?: @"", waMediaLikeTypeKey: @(item.type)}];
@@ -564,21 +569,54 @@ static BOOL waCatalogTracksAreDownloaded(NSArray *tracks) {
 
 - (void)downloadStateDidChange:(NSNotification *)notification {
     if (!self.view.window) return;
+    NSString *identifier = notification.userInfo[@"identifier"] ?: @"";
     if ([notification.userInfo[@"event"] isEqualToString:@"progress"]) {
         if (self.downloadReloadScheduled) return;
         self.downloadReloadScheduled = YES;
+        self.pendingProgressDownloadIdentifier = identifier;
         [self performSelector:@selector(reloadCatalogTable) withObject:nil afterDelay:0.4];
-    } else {
-        [self.infoCard.downloadButton setTitle:waCatalogTracksAreDownloaded(self.tracks) ? @"Downloaded" : @"Download" forState:UIControlStateNormal];
-        [self.catalogTableView reloadData];
+        return;
     }
+    self.tracksDownloadedFlag = nil;
+    [self downloadButtonRefreshTitle];
+    [self refreshDownloadRowForIdentifier:identifier];
+}
+
+- (void)downloadButtonRefreshTitle {
+    if (!self.tracksDownloadedFlag) self.tracksDownloadedFlag = @(waCatalogTracksAreDownloaded(self.tracks));
+    [self.infoCard.downloadButton setTitle:self.tracksDownloadedFlag.boolValue ? @"Downloaded" : @"Download" forState:UIControlStateNormal];
+}
+
+// Refresh only the row whose download changed; a full reloadData rebuilds the
+// whole album/artist list on every download event.
+- (void)refreshDownloadRowForIdentifier:(NSString *)identifier {
+    if (!identifier.length) { [self.catalogTableView reloadData]; return; }
+    NSString *clean = [identifier hasPrefix:@"deezer:"] ? [identifier substringFromIndex:7] : identifier;
+    NSInteger row = NSNotFound;
+    for (NSUInteger index = 0; index < self.tracks.count; index++) {
+        waMediaItem *track = self.tracks[index];
+        NSString *trackID = track.trackId.length ? track.trackId : track.identifier;
+        if ([trackID isEqualToString:clean] || [trackID isEqualToString:identifier]) { row = (NSInteger)index; break; }
+    }
+    if (row == NSNotFound) return;
+    NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:0];
+    waCatalogTrackCell *cell = (waCatalogTrackCell *)[self.catalogTableView cellForRowAtIndexPath:path];
+    if (![cell isKindOfClass:[waCatalogTrackCell class]]) return;
+    waDownload *download = [[waDownloadManager sharedManager] downloadForIdentifier:clean];
+    [cell setDownloadState:download ? download.state : waDownloadStateNotFound progress:download.progress];
 }
 
 - (void)reloadCatalogTable {
     self.downloadReloadScheduled = NO;
-    if (self.view.window) {
-        [self.infoCard.downloadButton setTitle:waCatalogTracksAreDownloaded(self.tracks) ? @"Downloaded" : @"Download" forState:UIControlStateNormal];
-        [self.catalogTableView reloadData];
+    if (!self.view.window) return;
+    [self refreshDownloadRowForIdentifier:self.pendingProgressDownloadIdentifier];
+    self.pendingProgressDownloadIdentifier = nil;
+}
+
+- (void)refreshVisibleLikeState {
+    for (NSIndexPath *path in self.catalogTableView.indexPathsForVisibleRows) {
+        UITableViewCell *cell = [self.catalogTableView cellForRowAtIndexPath:path];
+        if ([cell isKindOfClass:[waCatalogTrackCell class]]) [(waCatalogTrackCell *)cell refreshLikeState];
     }
 }
 
@@ -586,7 +624,13 @@ static BOOL waCatalogTracksAreDownloaded(NSArray *tracks) {
     NSString *identifier = notification.userInfo[waMediaLikeIdentifierKey];
     NSNumber *type = notification.userInfo[waMediaLikeTypeKey];
     if (identifier.length && ![identifier isEqualToString:self.mediaItem.identifier]) {
-        [self.catalogTableView reloadData];
+        waMediaItem *changed = [notification.object isKindOfClass:[waMediaItem class]] ? notification.object : nil;
+        if (changed) {
+            for (waMediaItem *track in self.tracks) {
+                if ([track.identifier isEqualToString:identifier] && track.type == changed.type) track.liked = changed.isLiked;
+            }
+        }
+        [self refreshVisibleLikeState];
         return;
     }
     if (type && type.integerValue != self.mediaItem.type) return;
