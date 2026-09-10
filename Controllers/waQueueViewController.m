@@ -237,7 +237,21 @@
         }
     });
 }
-- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; waAudioPlayer *player = [waAudioPlayer sharedPlayer]; self.lastKnownQueueCount = player.queueItems.count; self.lastKnownQueueIndex = player.queueIndex; [self.tableView reloadData]; [self updateButtons]; [self updateQueueSummary]; [self scrollToCurrentItem]; }
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    waAudioPlayer *player = [waAudioPlayer sharedPlayer];
+    BOOL countChanged = player.queueItems.count != self.lastKnownQueueCount;
+    self.lastKnownQueueCount = player.queueItems.count;
+    self.lastKnownQueueIndex = player.queueIndex;
+    // Only rebuild rows when the queue itself changed; returning to the tab
+    // after a track advanced needs just the visible state refresh.
+    if (countChanged) [self.tableView reloadData];
+    else [self updateVisibleDownloadStates];
+    [self updateButtons];
+    [self updateQueueSummary];
+    [self refreshVisibleActiveStates];
+    [self scrollToCurrentItem];
+}
 - (void)refreshVisibleActiveStates {
     waAudioPlayer *player = [waAudioPlayer sharedPlayer];
     NSArray *items = player.queueItems;
