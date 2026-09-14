@@ -83,7 +83,7 @@ static void waTrimStreamCache(void) {
         total = total > size ? total - size : 0;
     }
 }
-@interface HTTPSource () {
+@interface HTTPSource () <NSURLSessionDataDelegate> {
     long _byteCount;
     long _bytesRead;
     long long _bytesExpected; // 0 = unknown (chunked / no Content-Length)
@@ -101,8 +101,11 @@ static void waTrimStreamCache(void) {
     long long _decryptOffset;
     NSMutableData *_decryptRemainder;
     NSURL *_sourceURL;
+    dispatch_queue_t _writeQueue;
 }
-@property (retain, nonatomic) NSURLConnection *urlConnection;
+@property (retain, nonatomic) NSURLSession *session;
+@property (retain, nonatomic) NSURLSessionDataTask *dataTask;
+@property (retain, nonatomic) NSOperationQueue *sessionDelegateQueue;
 @property (retain, nonatomic) NSMutableURLRequest *request;
 @property (retain, nonatomic) NSFileHandle *fileHandle;
 @property (copy, nonatomic) NSString *cachePath;
@@ -138,9 +141,8 @@ const NSTimeInterval readTimeout = 1.0;
     [pool drain];
 }
 
-- (void)wa_startConnectionOnNetworkThread {
-    [_urlConnection scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
-    [_urlConnection start];
+- (void)wa_startDataTaskOnNetworkThread {
+    [_dataTask resume];
 }
 
 - (void)dealloc {
@@ -153,8 +155,11 @@ const NSTimeInterval readTimeout = 1.0;
     [_fileHandle closeFile];
     [_fileHandle release];
     [_cachePath release];
-    [_urlConnection release];
+    [_dataTask release];
+    [_session release];
+    [_sessionDelegateQueue release];
     [_request release];
+    if (_writeQueue) { dispatch_release(_writeQueue); _writeQueue = NULL; }
 
     [super dealloc];
 }
@@ -214,11 +219,12 @@ const NSTimeInterval readTimeout = 1.0;
     [self.request addValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
     [self.request setValue:@"Wave/1.0" forHTTPHeaderField:@"User-Agent"];
 
-    NSURLConnection *connection = [[NSURLConnection alloc] initWithRequest:_request
-                                                                  delegate:self
-                                                          startImmediately:NO];
-    self.urlConnection = connection;
-    [connection release];
+    self.sessionDelegateQueue = [[NSOperationQueue alloc] init];
+    self.sessionDelegateQueue.maxConcurrentOperationCount = 1;
+    self.session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]
+                                                  delegate:self
+                                             delegateQueue:self.sessionDelegateQueue];
+    self.dataTask = [self.session dataTaskWithRequest:_request];
 
     _cancelled = NO;
     _downloadComplete = NO;
@@ -228,16 +234,16 @@ const NSTimeInterval readTimeout = 1.0;
     _bytesWaitingFromCache = 0;
     _connectionDidFail = NO;
     _invalidResponse = NO;
+    _writeQueue = dispatch_queue_create("com.bytebox.wave.stream.write", DISPATCH_QUEUE_SERIAL);
     if (_downloadingSemaphore) { dispatch_release(_downloadingSemaphore); _downloadingSemaphore = NULL; }
     _downloadingSemaphore = dispatch_semaphore_create(0);
     [self prepareCache:[NSString stringWithFormat:@"%lx.%@",
                         (unsigned long)[[url absoluteString] hash],
                         url.pathExtension]];
 
-    // Start the connection on a dedicated runloop thread, never main.
-    // The delegate callbacks then fire there; the 15s semaphore deadline below
-    // preserves the original timeout semantics.
-    [self performSelector:@selector(wa_startConnectionOnNetworkThread)
+    // Start the task away from the decoder's blocked thread; delegate callbacks
+    // are delivered on the per-source session queue.
+    [self performSelector:@selector(wa_startDataTaskOnNetworkThread)
                  onThread:[[self class] wa_networkThread]
                withObject:nil
             waitUntilDone:YES];
@@ -247,7 +253,7 @@ const NSTimeInterval readTimeout = 1.0;
                                                              (int64_t)(waHTTPSourceOpenTimeout * NSEC_PER_SEC)));
     if (waitResult != 0) {
         _connectionDidFail = YES;
-        [_urlConnection cancel];
+        [_dataTask cancel];
         return NO;
     }
 
@@ -308,7 +314,7 @@ const NSTimeInterval readTimeout = 1.0;
         if (_downloadComplete) break;
         if ([NSDate timeIntervalSinceReferenceDate] >= deadline) {
             _connectionDidFail = YES;
-            [_urlConnection cancel];
+            [_dataTask cancel];
             return 0;
         }
         _bytesWaitingFromCache = target;
@@ -344,14 +350,15 @@ const NSTimeInterval readTimeout = 1.0;
 
 - (void)close {
     _cancelled = YES;
-    [_urlConnection cancel];
+    [_dataTask cancel];
+    [_session invalidateAndCancel];
     if (_downloadingSemaphore) dispatch_semaphore_signal(_downloadingSemaphore);
     NSFileHandle *fileHandle = [self.fileHandle retain];
     self.fileHandle = nil;
     // Wait for queued writes before closing or deleting the file. This keeps
-    // a late NSURLConnection callback from writing into a closed handle.
+    // a late NSURLSession callback from writing into a closed handle.
     if (fileHandle) {
-        dispatch_sync([HTTPSource cachingQueue], ^{
+        dispatch_sync(_writeQueue, ^{
             [fileHandle synchronizeFile];
             [fileHandle closeFile];
         });
@@ -442,9 +449,11 @@ const NSTimeInterval readTimeout = 1.0;
     }
 }
 
-#pragma mark - NSURLConnection delegate
+#pragma mark - NSURLSession delegate
 
-- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler {
+    (void)session;
+    (void)dataTask;
     if ([response isKindOfClass:[NSHTTPURLResponse class]] &&
         [(NSHTTPURLResponse *)response statusCode] >= 400) {
         // Surface the server's answer: a failing lossless endpoint here is
@@ -453,8 +462,9 @@ const NSTimeInterval readTimeout = 1.0;
             (long)[(NSHTTPURLResponse *)response statusCode], [_request.URL absoluteString] ?: @""];
         _invalidResponse = YES;
         _connectionDidFail = YES;
-        [_urlConnection cancel];
+        [_dataTask cancel];
         dispatch_semaphore_signal(_downloadingSemaphore);
+        if (completionHandler) completionHandler(NSURLSessionResponseCancel);
         return;
     }
     _bytesExpected = response.expectedContentLength > 0 ? response.expectedContentLength : 0;
@@ -465,14 +475,17 @@ const NSTimeInterval readTimeout = 1.0;
     // stored above as 0 = unknown.
     @try {
         if (_bytesExpected > 0 && [_fileHandle seekToEndOfFile] == _bytesExpected) {
-            [_urlConnection cancel];
+            [_dataTask cancel];
             _byteCount = (long)_bytesExpected;
             _downloadComplete = YES;
         }
     } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource seekToEnd failed: %@", e.reason]; }
+    if (completionHandler) completionHandler(NSURLSessionResponseAllow);
 }
 
-- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
+    (void)session;
+    (void)dataTask;
     if (data && _fileHandle) {
         // Backend .flac streams arrive in the clear; deezer:// payloads are
         // still encrypted on the wire here (decrypt happens below), so the
@@ -483,7 +496,7 @@ const NSTimeInterval readTimeout = 1.0;
                 [[waDebugLog sharedLog] log:@"HTTPSource: non-FLAC payload on .flac stream (%@)", [_request.URL absoluteString] ?: @""];
                 _invalidResponse = YES;
                 _connectionDidFail = YES;
-                [_urlConnection cancel];
+                [_dataTask cancel];
                 dispatch_semaphore_signal(_downloadingSemaphore);
                 return;
             }
@@ -501,7 +514,7 @@ const NSTimeInterval readTimeout = 1.0;
                     [[waDebugLog sharedLog] log:@"HTTPSource deezer decrypt failed at chunk %lu", chunkIndex];
                     _invalidResponse = YES;
                     _connectionDidFail = YES;
-                    [_urlConnection cancel];
+                    [_dataTask cancel];
                     dispatch_semaphore_signal(_downloadingSemaphore);
                     [fileHandle release];
                     return;
@@ -513,7 +526,7 @@ const NSTimeInterval readTimeout = 1.0;
             if (![plain length]) { [fileHandle release]; return; }
             payload = plain;
         }
-        dispatch_async([HTTPSource cachingQueue], ^{
+        dispatch_async(_writeQueue, ^{
             @synchronized(fileHandle) {
                 @try { [fileHandle seekToFileOffset:_byteCount]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource write seek failed: %@", e.reason]; [fileHandle release]; return; }
                 @try { [fileHandle writeData:payload]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource write failed: %@", e.reason]; [fileHandle release]; return; }
@@ -527,12 +540,14 @@ const NSTimeInterval readTimeout = 1.0;
     }
 }
 
-- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
-    dispatch_semaphore_signal(_downloadingSemaphore);
-    _connectionDidFail = YES;
-}
-
-- (void)connectionDidFinishLoading:(NSURLConnection *)connection {
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    (void)session;
+    (void)task;
+    if (error) {
+        dispatch_semaphore_signal(_downloadingSemaphore);
+        _connectionDidFail = YES;
+        return;
+    }
     if (_deezerDecrypt && [_decryptRemainder length]) {
         NSUInteger rest = [_decryptRemainder length];
         unsigned char *buf = malloc(rest);
@@ -543,7 +558,7 @@ const NSTimeInterval readTimeout = 1.0;
             NSData *tail = [NSData dataWithBytes:buf length:rest];
             free(buf);
             NSFileHandle *fh = [_fileHandle retain];
-            dispatch_sync([HTTPSource cachingQueue], ^{
+            dispatch_sync(_writeQueue, ^{
                 @synchronized(fh) {
                     @try { [fh seekToFileOffset:_byteCount]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource tail seek failed: %@", e.reason]; return; }
                     @try { [fh writeData:tail]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource tail write failed: %@", e.reason]; return; }

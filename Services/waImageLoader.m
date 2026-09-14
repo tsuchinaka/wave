@@ -1,12 +1,16 @@
 #import "waImageLoader.h"
 #import "../Models/waPreferences.h"
+#import "waAPIClient.h"
 #import <CommonCrypto/CommonDigest.h>
+#import <Foundation/NSURLSession.h>
 #import <ImageIO/ImageIO.h>
 
-// Main-run-loop connection with a bounded response and explicit cancellation.
-@interface waImageDownload : NSObject <NSURLConnectionDataDelegate>
+// Background NSURLSession image transfer with a bounded response and explicit cancellation.
+@interface waImageDownload : NSObject <NSURLSessionDataDelegate>
 @property (nonatomic, strong) NSURLRequest *request;
-@property (nonatomic, strong) NSURLConnection *connection;
+@property (nonatomic, strong) NSOperationQueue *delegateQueue;
+@property (nonatomic, strong) NSURLSession *session;
+@property (nonatomic, strong) NSURLSessionDataTask *dataTask;
 @property (nonatomic, strong) NSMutableData *data;
 @property (nonatomic, copy) void (^completion)(NSData *);
 @property (nonatomic, assign) BOOL finished;
@@ -17,35 +21,46 @@
 @implementation waImageDownload
 - (void)start {
     self.data = [NSMutableData data];
-    self.connection = [[NSURLConnection alloc] initWithRequest:self.request delegate:self startImmediately:NO];
-    if (!self.connection) { [self finish:NO]; return; }
-    [self.connection scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
-    [self.connection start];
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    configuration.requestCachePolicy = NSURLRequestUseProtocolCachePolicy;
+    configuration.timeoutIntervalForRequest = 15.0;
+    self.session = [NSURLSession sessionWithConfiguration:configuration delegate:self delegateQueue:self.delegateQueue];
+    self.dataTask = [self.session dataTaskWithRequest:self.request];
+    if (!self.dataTask) { [self finish:NO]; return; }
+    [self.dataTask resume];
 }
 - (void)finish:(BOOL)success {
     if (self.finished) return;
     self.finished = YES;
-    [self.connection cancel];
-    self.connection = nil;
+    [self.dataTask cancel];
+    self.dataTask = nil;
+    [self.session finishTasksAndInvalidate];
+    self.session = nil;
     NSData *data = success ? [self.data copy] : nil;
     self.data = nil;
     void (^completion)(NSData *) = self.completion;
     self.completion = nil;
     if (completion) completion(data);
 }
-- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
-    if (self.finished) return;
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler {
+    if (self.finished) { completionHandler(NSURLSessionResponseCancel); return; }
     NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
-    if (status < 200 || status >= 300 || response.expectedContentLength > 8 * 1024 * 1024) { [self finish:NO]; return; }
+    if (status < 200 || status >= 300 || response.expectedContentLength > 8 * 1024 * 1024) {
+        [self finish:NO];
+        completionHandler(NSURLSessionResponseCancel);
+        return;
+    }
     [self.data setLength:0];
+    completionHandler(NSURLSessionResponseAllow);
 }
-- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
     if (self.finished) return;
     if (data.length > 8 * 1024 * 1024 - self.data.length) { [self finish:NO]; return; }
     [self.data appendData:data];
 }
-- (void)connectionDidFinishLoading:(NSURLConnection *)connection { [self finish:YES]; }
-- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error { [self finish:NO]; }
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    [self finish:error == nil];
+}
 @end
 
 @interface waImageLoader ()
@@ -53,6 +68,8 @@
 @property (nonatomic, strong) NSString *directory;
 @property (nonatomic, strong) NSMutableDictionary *pending;
 @property (nonatomic, strong) NSOperationQueue *queue;
+@property (nonatomic, strong) NSOperationQueue *requestQueue;
+@property (nonatomic, strong) NSOperationQueue *networkDelegateQueue;
 @property (nonatomic, strong) NSMutableArray *waitingDownloads;
 @property (nonatomic, strong) NSMutableArray *activeDownloads;
 @property (nonatomic, strong) dispatch_queue_t cacheIOQueue;
@@ -149,6 +166,13 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
         // Four simultaneous JPEG decodes make scrolling visibly fight the
         // audio/UI threads on A4 devices. Two keeps scrolling responsive.
         _queue.maxConcurrentOperationCount = 2;
+        _requestQueue = [[NSOperationQueue alloc] init];
+        // Cache lookup and request creation must not consume decode slots.
+        _requestQueue.maxConcurrentOperationCount = 4;
+        _networkDelegateQueue = [[NSOperationQueue alloc] init];
+        // Keep network callbacks off the main thread while allowing more
+        // transfers than decode slots, so scrolling does not wait on JPEG IO.
+        _networkDelegateQueue.maxConcurrentOperationCount = 4;
         _waitingDownloads = [NSMutableArray array];
         _activeDownloads = [NSMutableArray array];
         _cacheIOQueue = dispatch_queue_create("com.bytebox.wave.images.cache", DISPATCH_QUEUE_SERIAL);
@@ -222,6 +246,14 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
     CGFloat points = MAX(targetSize.width, targetSize.height);
     CGFloat scale = [UIScreen mainScreen].scale;
     NSUInteger maxPixelSize = MAX((NSUInteger)1, (NSUInteger)ceil(points * scale));
+    // Home and Search can receive API-relative artwork paths, while some
+    // table screens resolve them before calling the loader. Normalize here so
+    // every caller gets the same CDN URL and cache key.
+    NSURL *parsedURL = [NSURL URLWithString:url];
+    if (!parsedURL.scheme.length) {
+        NSURL *resolvedURL = [[waAPIClient sharedClient] URLForPath:url];
+        if (resolvedURL.absoluteString.length) url = resolvedURL.absoluteString;
+    }
     [self loadURL:[self thumbnailURL:url maxPixelSize:maxPixelSize] placeholder:placeholder allowHighQualityFallback:NO maxPixelSize:maxPixelSize completion:completion];
 }
 
@@ -332,8 +364,8 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
 }
 
 - (void)startWaitingDownloads {
-    // These arrays and all connection lifecycle operations belong to main.
-    while (self.activeDownloads.count < 2 && self.waitingDownloads.count) {
+    // Queue bookkeeping stays on main; NSURLSession callbacks do not.
+    while (self.activeDownloads.count < 4 && self.waitingDownloads.count) {
         waImageDownload *download = self.waitingDownloads[0];
         [self.waitingDownloads removeObjectAtIndex:0];
         [self.activeDownloads addObject:download];
@@ -346,39 +378,46 @@ static UIImage *waImageDownsampledFromData(NSData *data, NSUInteger maxPixelSize
         if (![self isCurrentGeneration:generation]) return;
         waImageDownload *download = [[waImageDownload alloc] init];
         download.request = request;
+        download.delegateQueue = self.networkDelegateQueue;
         __weak waImageLoader *weakSelf = self;
         __weak waImageDownload *weakDownload = download;
         download.completion = ^(NSData *data) {
             waImageLoader *loader = weakSelf;
             waImageDownload *finished = weakDownload;
-            if (finished) [loader.activeDownloads removeObjectIdenticalTo:finished];
-            if ([loader isCurrentGeneration:generation] && completion) completion(data);
-            [loader startWaitingDownloads];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (finished) [loader.activeDownloads removeObjectIdenticalTo:finished];
+                if ([loader isCurrentGeneration:generation] && completion) completion(data);
+                [loader startWaitingDownloads];
+            });
         };
         [self.waitingDownloads addObject:download];
         [self startWaitingDownloads];
     });
 }
 
-- (UIImage *)imageFromDiskForURL:(NSString *)url maxPixelSize:(NSUInteger)maxPixelSize {
-    __block UIImage *image = nil;
+- (NSData *)dataFromDiskForURL:(NSString *)url {
+    __block NSData *data = nil;
     dispatch_sync(self.cacheIOQueue, ^{
-        NSData *data = [NSData dataWithContentsOfFile:[self pathForURL:url]];
-        image = waImageDownsampledFromData(data, maxPixelSize);
+        data = [NSData dataWithContentsOfFile:[self pathForURL:url]];
     });
-    return image;
+    return data;
 }
 
 - (void)loadCandidateAtIndex:(NSUInteger)index candidates:(NSArray *)candidates originalURL:(NSString *)originalURL maxPixelSize:(NSUInteger)maxPixelSize generation:(NSUInteger)generation loadedData:(NSData *)loadedData sourceURL:(NSString *)sourceURL {
     if (![self isCurrentGeneration:generation]) return;
     if (index >= candidates.count) { [self finishURL:originalURL image:nil generation:generation]; return; }
     NSString *candidate = candidates[index];
-    [self.queue addOperationWithBlock:^{
+    [self.requestQueue addOperationWithBlock:^{
         if (![self isCurrentGeneration:generation]) return;
         NSString *candidateKey = [self cacheKeyForURL:candidate maxPixelSize:maxPixelSize];
-        UIImage *diskImage = [self imageFromDiskForURL:candidateKey maxPixelSize:maxPixelSize];
-        if (diskImage) {
-            [self finishURL:originalURL image:diskImage generation:generation];
+        NSData *diskData = [self dataFromDiskForURL:candidateKey];
+        if (diskData.length) {
+            [self.queue addOperationWithBlock:^{
+                if (![self isCurrentGeneration:generation]) return;
+                UIImage *diskImage = waImageDownsampledFromData(diskData, maxPixelSize);
+                if (diskImage) [self finishURL:originalURL image:diskImage generation:generation];
+                else [self loadCandidateAtIndex:index + 1 candidates:candidates originalURL:originalURL maxPixelSize:maxPixelSize generation:generation loadedData:nil sourceURL:nil];
+            }];
             return;
         }
         NSURL *candidateURL = [NSURL URLWithString:candidate];
