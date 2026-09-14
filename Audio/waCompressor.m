@@ -1,6 +1,7 @@
 #import "waCompressor.h"
 #import <libkern/OSAtomic.h>
 #import <math.h>
+#import <sched.h>
 
 static float waCompThresholdForStrength(float strength) {
     // Strength 0 -> -3dB (0.708), 100 -> -18dB (0.126). UI clamps 0..100.
@@ -32,7 +33,26 @@ void waCompInit(waCompressor *comp, double sampleRate) {
     comp->paramBlock = params;
     comp->stateBlock = state;
     comp->resetPending = 0;
+    comp->activeReaders = 0;
     OSMemoryBarrier();
+}
+
+void waCompDeinit(waCompressor *comp) {
+    if (!comp) return;
+    // The mixer disposes its AudioQueue before calling this, so no render
+    // callback can still hold either block.
+    free((void *)comp->paramBlock);
+    free((void *)comp->stateBlock);
+    comp->paramBlock = NULL;
+    comp->stateBlock = NULL;
+    comp->activeReaders = 0;
+}
+
+static NSObject *waCompLock(void) {
+    static NSObject *lock = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ lock = [[NSObject alloc] init]; });
+    return lock;
 }
 
 static void waCompPublishParams(waCompressor *comp) {
@@ -44,27 +64,31 @@ static void waCompPublishParams(waCompressor *comp) {
     do {
         old = comp->paramBlock;
         OSMemoryBarrier();
-    } while (!OSAtomicCompareAndSwapPtr(old, block, &comp->paramBlock));
+    } while (!OSAtomicCompareAndSwapPtrBarrier(old, block, &comp->paramBlock));
     OSMemoryBarrier();
-    // Old blocks leak (tiny, bounded by UI edits) to avoid freeing memory
-    // the render thread may still be reading. Same policy as waEqualizer.
+    while (OSAtomicAdd32Barrier(0, &comp->activeReaders) != 0) sched_yield();
+    free(old);
 }
 
 void waCompSetEnabled(waCompressor *comp, BOOL enabled) {
     if (!comp) return;
     BOOL next = enabled ? YES : NO;
-    if (comp->enabled == next) return;
-    comp->enabled = next;
-    waCompPublishParams(comp);
+    @synchronized(waCompLock()) {
+        if (comp->enabled == next) return;
+        comp->enabled = next;
+        waCompPublishParams(comp);
+    }
 }
 
 void waCompSetStrength(waCompressor *comp, float strength) {
     if (!comp) return;
     if (strength < 0.0f) strength = 0.0f;
     if (strength > 100.0f) strength = 100.0f;
-    if (comp->strength == strength) return;
-    comp->strength = strength;
-    waCompPublishParams(comp);
+    @synchronized(waCompLock()) {
+        if (comp->strength == strength) return;
+        comp->strength = strength;
+        waCompPublishParams(comp);
+    }
 }
 
 void waCompReset(waCompressor *comp) {
@@ -78,11 +102,15 @@ void waCompReset(waCompressor *comp) {
 
 void waCompProcess(waCompressor *comp, SInt16 *samples, UInt32 frames) {
     if (!comp || !samples || frames == 0) return;
+    OSAtomicAdd32Barrier(1, &comp->activeReaders);
     OSMemoryBarrier();
     waCompParamBlock *params = (waCompParamBlock *)comp->paramBlock;
     waCompStateBlock *state = (waCompStateBlock *)comp->stateBlock;
     OSMemoryBarrier();
-    if (!params || !state || params->bypass) return;
+    if (!params || !state || params->bypass) {
+        OSAtomicAdd32Barrier(-1, &comp->activeReaders);
+        return;
+    }
     // Adopt a pending reset on the render thread (only writer of state).
     OSMemoryBarrier();
     if (comp->resetPending) {
@@ -129,4 +157,5 @@ void waCompProcess(waCompressor *comp, SInt16 *samples, UInt32 frames) {
     if (gain > 1.0f) gain = 1.0f;
     state->envelope = envelope;
     state->gain = gain;
+    OSAtomicAdd32Barrier(-1, &comp->activeReaders);
 }

@@ -2,4 +2,5 @@
 
 @interface waDeezerLoginViewController : UIViewController
 - (id)initWithCompletion:(void (^)(NSError *error))completion;
+- (id)initWithCompletion:(void (^)(NSError *error))completion required:(BOOL)required;
 @end

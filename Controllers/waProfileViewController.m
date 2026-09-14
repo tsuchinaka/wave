@@ -162,7 +162,7 @@
         self.loadGeneration += 1;
         [self clearProfileData];
         [self.spinner stopAnimating];
-         self.stateLabel.text = @"Sign in to see your Deezer profile.";
+         self.stateLabel.text = @"Connect Deezer to see your profile.";
         [self.tableView reloadData];
         return;
     }
@@ -376,7 +376,7 @@
     cell.detailTextLabel.textColor = [waTheme secondaryTextColor];
 
     if (![self isAuthenticated]) {
-        cell.textLabel.text = @"Sign in";
+        cell.textLabel.text = @"Connect Deezer";
          cell.detailTextLabel.text = @"Connect your Deezer account";
         cell.imageView.image = nil;
         cell.accessoryType = UITableViewCellAccessoryNone;
@@ -406,8 +406,8 @@
         cell.imageView.image = nil;
         cell.accessoryType = UITableViewCellAccessoryNone;
     } else if (path.section == 0 && path.row == 2) {
-        cell.textLabel.text = @"Log out";
-        cell.detailTextLabel.text = @"Disconnect Deezer";
+        cell.textLabel.text = @"Disconnect Deezer";
+        cell.detailTextLabel.text = @"Remove this Deezer account";
         cell.imageView.image = nil;
         cell.accessoryType = UITableViewCellAccessoryNone;
     } else if (path.section == 1) {
@@ -485,14 +485,14 @@
 
 - (void)showProfileActions {
     __weak waProfileViewController *weakSelf = self;
-    waAction *logout = [waAction actionWithIdentifier:@"profile.logout" title:@"Log out" destructive:YES availability:nil handler:^(id object) { (void)object; [[waAPIClient sharedClient] logoutWithCompletion:^(NSError *error) { (void)error; [weakSelf loadProfile]; }]; }];
+    waAction *logout = [waAction actionWithIdentifier:@"profile.logout" title:@"Disconnect Deezer" destructive:YES availability:nil handler:^(id object) { (void)object; [[waAPIClient sharedClient] logoutWithCompletion:^(NSError *error) { (void)error; [weakSelf loadProfile]; }]; }];
     [[waActions sharedActions] presentTitle:[self displayName] actions:@[logout] object:nil fromViewController:self];
 }
 
 - (void)showLogin {
     __weak waProfileViewController *weakSelf = self;
     waDeezerLoginViewController *login = [[waDeezerLoginViewController alloc] initWithCompletion:^(NSError *error) {
-        if (error && error.code != NSUserCancelledError) [[[UIAlertView alloc] initWithTitle:@"Deezer Login" message:error.localizedDescription delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+        if (error && error.code != NSUserCancelledError) [[[UIAlertView alloc] initWithTitle:@"Deezer" message:error.localizedDescription delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
         if (!error) { [weakSelf loadProfile]; }
     }];
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:login];

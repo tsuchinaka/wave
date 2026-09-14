@@ -1,5 +1,4 @@
 #import "waActions.h"
-#import "../Services/waTheme.h"
 
 @class waActions;
 
@@ -75,9 +74,11 @@
     session.manager = self;
     session.viewController = viewController;
     session.object = object;
-    session.sheet = [[UIActionSheet alloc] initWithTitle:title delegate:session cancelButtonTitle:@"Cancel" destructiveButtonTitle:destructive.title otherButtonTitles:nil];
-    session.sheet.opaque = YES;
-    session.sheet.actionSheetStyle = UIActionSheetStyleBlackOpaque;
+    // Destructive goes in at init (index 0) and cancel is added last. HI keeps
+    // both in place, so the indices returned by addButtonWithTitle: stay
+    // aligned with clickedButtonAtIndex: (moving the destructive afterwards
+    // reindexes the sheet and every button triggers the wrong action).
+    session.sheet = [[UIActionSheet alloc] initWithTitle:title delegate:session cancelButtonTitle:nil destructiveButtonTitle:destructive.title otherButtonTitles:nil];
     // addButtonWithTitle: returns the actual index. Keep that index instead of
     // matching titles, because two different actions may share a title.
     NSMutableDictionary *actionsByIndex = [NSMutableDictionary dictionary];
@@ -86,6 +87,8 @@
         actionsByIndex[@(index)] = action;
     }
     if (destructive) actionsByIndex[@(session.sheet.destructiveButtonIndex)] = destructive;
+    // Added after every other button, so it is genuinely the last index/HI slot.
+    session.sheet.cancelButtonIndex = [session.sheet addButtonWithTitle:@"Cancel"];
 
     session.actionsByButtonIndex = actionsByIndex;
     [self.sessions addObject:session];
@@ -103,13 +106,6 @@
 @end
 
 @implementation waActionSheetSession
-
-- (void)willPresentActionSheet:(UIActionSheet *)actionSheet {
-    // UIActionSheet is intentionally themed, while UIAlertView remains native.
-    // Applying after presentation ensures iOS 6 has created its private button
-    // labels before we replace their Helvetica fonts.
-    [waTheme applyToView:actionSheet];
-}
 
 - (void)actionSheet:(UIActionSheet *)sheet clickedButtonAtIndex:(NSInteger)index {
     if (index == sheet.cancelButtonIndex) return;

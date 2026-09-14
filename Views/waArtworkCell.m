@@ -106,6 +106,10 @@ static void waApplyCellCorners(UIView *view, waCellCornerStyle style) {
     self.cachedDownloadIcon = [waTheme tintedIcon:[UIImage imageNamed:@"wave-downloaded"] withColor:self.cachedBarColor];
     self.cachedGeniusIcon = [waTheme tintedIcon:[UIImage imageNamed:@"WaveGenius"] withColor:self.cachedBarColor];
     if (self.downloadIconView) self.downloadIconView.image = self.cachedDownloadIcon;
+    if (self.downloadProgressView) {
+        self.downloadProgressView.progressTintColor = self.cachedBarColor;
+        self.downloadProgressView.trackTintColor = [self.cachedSecondaryTextColor colorWithAlphaComponent:0.25];
+    }
     if (self.geniusIconView) self.geniusIconView.image = self.cachedGeniusIcon;
     if (self.likeButton) {
         [self.likeButton setImage:self.cachedHeartNormal forState:UIControlStateNormal];
@@ -152,7 +156,7 @@ static void waApplyCellCorners(UIView *view, waCellCornerStyle style) {
     waMediaItem *item = self.likeItem;
     if (!item) return;
     if (![[waAPIClient sharedClient] isAuthenticated]) {
-        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Sign in to save this item." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Connect Deezer to save this item." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
         return;
     }
     BOOL liked = !item.isLiked;
@@ -223,7 +227,9 @@ static void waApplyCellCorners(UIView *view, waCellCornerStyle style) {
         self.downloadStateLabel.textColor = [waTheme barColor];
         self.downloadStateLabel.backgroundColor = [UIColor clearColor];
         [self.contentView addSubview:self.downloadStateLabel];
-        self.downloadProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+        self.downloadProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
+        self.downloadProgressView.progressTintColor = [waTheme barColor];
+        self.downloadProgressView.trackTintColor = [[waTheme secondaryTextColor] colorWithAlphaComponent:0.25];
         [self.contentView addSubview:self.downloadProgressView];
         self.downloadIconView = [[UIImageView alloc] initWithImage:nil];
         self.downloadIconView.contentMode = UIViewContentModeScaleAspectFit;
@@ -235,8 +241,23 @@ static void waApplyCellCorners(UIView *view, waCellCornerStyle style) {
     self.downloadIconView.image = self.cachedDownloadIcon;
     self.downloadIconView.hidden = state != waDownloadStateCompleted;
     self.downloadStateLabel.hidden = YES;
-    self.downloadProgressView.hidden = YES;
     self.downloadStateLabel.text = nil;
+    self.downloadProgressView.hidden = YES;
+    float clamped = MAX(0.0f, MIN(1.0f, progress));
+    self.downloadProgressView.progress = clamped;
+    // Active downloads get a percentage (plus the thin bar); completed rows
+    // keep only the checkmark, so idle libraries stay visually clean.
+    if (state == waDownloadStateQueued) {
+        self.downloadStateLabel.text = @"Queued";
+        self.downloadStateLabel.hidden = NO;
+    } else if (state == waDownloadStateDownloading) {
+        self.downloadStateLabel.text = [NSString stringWithFormat:@"%.0f%%", clamped * 100.0f];
+        self.downloadStateLabel.hidden = NO;
+        self.downloadProgressView.hidden = NO;
+    } else if (state == waDownloadStateFailed) {
+        self.downloadStateLabel.text = @"Failed";
+        self.downloadStateLabel.hidden = NO;
+    }
     self.cornersDirty = YES;
     [self setNeedsLayout];
 }
@@ -338,7 +359,7 @@ static void waApplyCellCorners(UIView *view, waCellCornerStyle style) {
     if (isValue1) {
         CGFloat detailWidth = 64.0;
         CGFloat gap = 8.0;
-        CGFloat titleWidth = MAX(0.0, contentWidth - textLeft - detailWidth - stateWidth - geniusWidth - rightInset - gap - (hasExplicitIcon ? 22.0 : 0.0));
+        CGFloat titleWidth = MAX(0.0, contentWidth - textLeft - detailWidth - stateWidth - geniusWidth - rightInset - gap - (hasExplicitIcon ? 28.0 : 0.0));
         CGRect titleFrame = self.textLabel.frame;
         titleFrame.origin.x = textLeft;
         titleFrame.origin.y = 7.0;
@@ -359,7 +380,7 @@ static void waApplyCellCorners(UIView *view, waCellCornerStyle style) {
         self.detailTextLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         self.detailTextLabel.textAlignment = NSTextAlignmentRight;
     } else {
-        CGFloat textWidth = MAX(0.0, contentWidth - textLeft - rightInset - stateWidth - geniusWidth - (hasExplicitIcon ? 22.0 : 0.0));
+        CGFloat textWidth = MAX(0.0, contentWidth - textLeft - rightInset - stateWidth - geniusWidth - (hasExplicitIcon ? 28.0 : 0.0));
         BOOL singleLine = self.detailTextLabel.text.length == 0;
         CGRect titleFrame = self.textLabel.frame;
         titleFrame.origin.x = textLeft;
@@ -397,10 +418,23 @@ static void waApplyCellCorners(UIView *view, waCellCornerStyle style) {
     if (hasGeniusIcon) actionRight -= 30.0;
     self.downloadStateLabel.frame = CGRectMake(actionRight - 70.0, 7.0, 70.0, 16.0);
     self.downloadProgressView.frame = CGRectMake(textLeft, CGRectGetHeight(self.contentView.bounds) - 5.0, MAX(20.0, contentWidth - textLeft - rightInset), 2.0);
-    CGFloat explicitX = contentWidth - rightInset - (hasDownloadIcon ? 42.0 : 20.0) - geniusWidth;
-    // Value1 album rows reserve the right side for duration. Put the marker
-    // immediately before that duration instead of underneath its label.
-    if (isValue1) explicitX = contentWidth - 64.0 - stateWidth - geniusWidth - rightInset - 22.0;
+    CGFloat explicitWidth = 20.0;
+    CGFloat explicitX = 0.0;
+    if (isValue1) {
+        // Value1 album rows reserve the right side for duration. Put the marker
+        // immediately before that duration instead of underneath its label.
+        explicitX = contentWidth - 64.0 - stateWidth - geniusWidth - rightInset - 28.0;
+    } else {
+        // Place the marker directly left of the like/download/genius cluster
+        // using its real frames. A fixed offset ignored the marker's own width
+        // and overlapped the download icon on rows with both like and download.
+        CGFloat clusterLeft = contentWidth - [waTheme standardMargin];
+        if (hasLike) clusterLeft = MIN(clusterLeft, CGRectGetMinX(self.likeButton.frame));
+        if (hasDownloadIcon) clusterLeft = MIN(clusterLeft, CGRectGetMinX(self.downloadIconView.frame));
+        if (hasDownloadState) clusterLeft = MIN(clusterLeft, CGRectGetMinX(self.downloadStateLabel.frame));
+        if (hasGeniusIcon) clusterLeft = MIN(clusterLeft, CGRectGetMinX(self.geniusIconView.frame));
+        explicitX = MAX(textLeft, clusterLeft - 4.0 - explicitWidth);
+    }
     if (self.explicitIconView) {
         self.explicitIconView.frame = CGRectMake(explicitX, (CGRectGetHeight(self.contentView.bounds) - 14.0) / 2.0, 20.0, 14.0);
     }

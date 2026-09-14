@@ -115,7 +115,7 @@ static void waPresentShareForItem(waMediaItem *item, UIViewController *viewContr
       NSString *likeTitle = album ? (item.isLiked ? @"Unlike Album" : @"Like Album") : (artist ? (item.isLiked ? @"Unlike Artist" : @"Like Artist") : (playlist ? (item.isLiked ? @"Remove Playlist" : @"Add Playlist") : (item.isLiked ? @"Unlike" : @"Like")));
     [actions addObject:[waAction actionWithIdentifier:@"media.like" title:likeTitle handler:^(waMediaItem *selected) {
         if (![[waAPIClient sharedClient] isAuthenticated]) {
-            [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Sign in to save this item." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+                [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Connect Deezer to save this item." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
             return;
         }
         BOOL liked = !selected.isLiked;
@@ -177,11 +177,11 @@ static void waPresentShareForItem(waMediaItem *item, UIViewController *viewContr
                  [[waDownloadManager sharedManager] enqueueDownloadWithItem:selected category:waDownloadCategorySong contextIdentifier:selected.trackId.length ? selected.trackId : selected.identifier];
             }]];
         }
-        [actions addObject:[waAction actionWithIdentifier:@"media.queue" title:@"Add to Queue" handler:^(waMediaItem *selected) { [[waAudioPlayer sharedPlayer] addItemToQueue:selected]; }]];
         [actions addObject:[waAction actionWithIdentifier:@"media.next" title:@"Play Next" handler:^(waMediaItem *selected) { [[waAudioPlayer sharedPlayer] playItemNext:selected]; }]];
+        [actions addObject:[waAction actionWithIdentifier:@"media.queue" title:@"Add to Queue" handler:^(waMediaItem *selected) { [[waAudioPlayer sharedPlayer] addItemToQueue:selected]; }]];
         [actions addObject:[waAction actionWithIdentifier:@"media.addToPlaylist" title:@"Add to Playlist" handler:^(waMediaItem *selected) {
             if (![[waAPIClient sharedClient] isAuthenticated]) {
-                [[[UIAlertView alloc] initWithTitle:@"Playlist" message:@"Sign in to manage playlists." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+                [[[UIAlertView alloc] initWithTitle:@"Playlist" message:@"Connect Deezer to manage playlists." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
                 return;
             }
             waPlaylistPicker *picker = [[waPlaylistPicker alloc] initWithSong:selected viewController:weakController];

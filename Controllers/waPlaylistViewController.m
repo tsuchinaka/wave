@@ -324,7 +324,7 @@ static BOOL waPlaylistTracksAreDownloaded(NSArray *tracks) {
 
 - (void)catalogInfoCardDidPressLike:(waCatalogInfoCard *)card {
     if (![[waAPIClient sharedClient] isAuthenticated]) {
-        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Sign in to save playlists to your library." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Connect Deezer to save playlists to your library." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
         return;
     }
     waMediaItem *item = [self playlistInfoItem];
@@ -365,7 +365,7 @@ static BOOL waPlaylistTracksAreDownloaded(NSArray *tracks) {
 - (void)catalogTrackCellDidPressLike:(waCatalogTrackCell *)cell item:(waMediaItem *)item {
     if (!item) return;
     if (![[waAPIClient sharedClient] isAuthenticated]) {
-        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Sign in to save songs to your library." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Connect Deezer to save songs to your library." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
         return;
     }
     BOOL liked = !item.isLiked;

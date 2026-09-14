@@ -61,6 +61,10 @@ static NSError *waDZResponseError(NSURLResponse *response, NSError *networkError
     return nil;
 }
 
+static BOOL waDZCredentialsWereRejected(NSError *error) {
+    return error && (error.code == 401 || error.code == 403);
+}
+
 static NSString *waDZString(id value) {
     if ([value isKindOfClass:[NSString class]]) return value;
     if ([value isKindOfClass:[NSNumber class]]) return [value stringValue];
@@ -588,7 +592,25 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
     return self;
 }
 
-- (BOOL)isAuthenticated { return [waKeychainStore deezerARL].length > 0; }
+- (BOOL)isAuthenticated {
+    // This is a synchronous credential-presence check. Callers that need to
+    // know whether Deezer still accepts the ARL must use
+    // validateAuthenticationWithCompletion:.
+    return [waKeychainStore deezerARL].length > 0;
+}
+
+- (void)validateAuthenticationWithCompletion:(void (^)(BOOL, NSError *))completion {
+    if (![self isAuthenticated]) {
+        waDeezerDispatchMain(^{
+            NSError *error = [self errorWithMessage:@"Connect your Deezer account first." code:401];
+            if (completion) completion(NO, error);
+        });
+        return;
+    }
+    [self authorizeWithCompletion:^(NSDictionary *user, NSError *error) {
+        if (completion) completion(user != nil && error == nil, error);
+    }];
+}
 
 // Private adapters used by feature categories. Keeping the transport and
 // response normalizers here avoids making those implementation details part
@@ -608,7 +630,7 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
 
 - (void)callMethod:(NSString *)method parameters:(NSDictionary *)parameters retry:(BOOL)retry completion:(void (^)(NSDictionary *, NSError *))completion {
     NSString *arl = [waKeychainStore deezerARL];
-    if (!arl.length) { waDeezerDispatchMain(^{ if (completion) completion(nil, [self errorWithMessage:@"Connect a Deezer account first." code:401]); }); return; }
+    if (!arl.length) { waDeezerDispatchMain(^{ if (completion) completion(nil, [self errorWithMessage:@"Connect your Deezer account first." code:401]); }); return; }
     waDZInstallARLCookie(arl);
     if (![method isEqualToString:@"deezer.getUserData"] && !self.csrfToken.length) {
         [self authorizeWithCompletion:^(NSDictionary *user, NSError *error) {
@@ -730,6 +752,10 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
                 } else {
                     self.csrfToken = nil;
                     self.cachedUser = nil;
+                    self.userIdentifier = nil;
+                    self.userName = nil;
+                    self.favoritesPlaylistIdentifier = nil;
+                    self.pipeJWT = nil;
                     resultError = error ?: [self errorWithMessage:@"Deezer login could not be validated." code:401];
                 }
                 self.authorizationInFlight = NO;
@@ -739,7 +765,16 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
             if (error || !identifier.length) {
                 resultUser = nil;
             }
-            [[waDebugLog sharedLog] log:@"Deezer authorization succeeded (csrf length=%lu, cookie count=%lu)", (unsigned long)self.csrfToken.length, (unsigned long)[[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:[NSURL URLWithString:@"https://www.deezer.com/"]].count];
+            BOOL credentialsWereRejected = waDZCredentialsWereRejected(resultError);
+            if (credentialsWereRejected) {
+                // A non-empty ARL is not proof that the session is valid. Do
+                // not let a rejected/stale credential pass the app gate.
+                [waKeychainStore clearDeezerARL];
+                [waKeychainStore clearToken];
+                waDZClearCookies();
+                [[NSNotificationCenter defaultCenter] postNotificationName:waDeezerAuthenticationDidChangeNotification object:self];
+            }
+            [[waDebugLog sharedLog] log:@"Deezer authorization %@ (csrf length=%lu, cookie count=%lu)", resultError ? @"failed" : @"succeeded", (unsigned long)self.csrfToken.length, (unsigned long)[[NSHTTPCookieStorage sharedHTTPCookieStorage] cookiesForURL:[NSURL URLWithString:@"https://www.deezer.com/"]].count];
             for (void (^waiter)(NSDictionary *, NSError *) in waiters) waiter(resultUser, resultError);
         });
     }];
@@ -1071,7 +1106,7 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
 
 - (void)flowConfigsWithCompletion:(void (^)(NSArray *, NSError *))completion {
     if (!self.isAuthenticated) {
-        waDeezerDispatchMain(^{ if (completion) completion(@[], [self errorWithMessage:@"Connect a Deezer account first." code:401]); });
+        waDeezerDispatchMain(^{ if (completion) completion(@[], [self errorWithMessage:@"Connect your Deezer account first." code:401]); });
         return;
     }
     if (!self.pipeJWT.length) {

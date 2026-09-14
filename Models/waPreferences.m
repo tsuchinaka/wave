@@ -2,8 +2,6 @@
 #import "../Services/waTheme.h"
 #import <sys/sysctl.h>
 
-static NSString * const waAPIURLKey = @"wa.apiURL";
-static NSString * const waAPIPortKey = @"wa.apiPort";
 static NSString * const waMaximumDownloadsKey = @"wa.maximumDownloads";
 static NSString * const waCrossfadeKey = @"wa.crossfade";
 static NSString * const waCrossfadeDurationKey = @"wa.crossfadeDuration";

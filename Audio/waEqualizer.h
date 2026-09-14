@@ -43,9 +43,11 @@ typedef struct {
     void * volatile coeffBlock; // atomic waEQCoeffBlock*
     void * volatile stateBlock; // atomic waEQStateBlock*
     volatile int32_t resetPending; // render zeroes state when set
+    volatile int32_t activeReaders; // render calls currently holding coeffBlock
 } waEqualizer;
 
 void waEQInit(waEqualizer *eq, double sampleRate);
+void waEQDeinit(waEqualizer *eq);
 void waEQSetGains(waEqualizer *eq, const float *gains);
 void waEQReset(waEqualizer *eq); // clear state (call on track change / seek)
 void waEQProcess(waEqualizer *eq, SInt16 *samples, UInt32 frames); // interleaved stereo

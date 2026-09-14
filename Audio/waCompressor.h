@@ -24,9 +24,11 @@ typedef struct {
     void * volatile paramBlock; // atomic waCompParamBlock*
     void * volatile stateBlock; // atomic waCompStateBlock*
     volatile int32_t resetPending; // render zeroes state when set (no alloc per track)
+    volatile int32_t activeReaders; // render calls currently holding paramBlock
 } waCompressor;
 
 void waCompInit(waCompressor *comp, double sampleRate);
+void waCompDeinit(waCompressor *comp);
 void waCompSetEnabled(waCompressor *comp, BOOL enabled);
 void waCompSetStrength(waCompressor *comp, float strength); // 0..100
 void waCompReset(waCompressor *comp); // clear envelope/gain (track change/seek)

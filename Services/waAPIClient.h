@@ -9,6 +9,7 @@ void waNetworkActivityEnd(void);
 @property (nonatomic, assign) NSUInteger port;
 + (waAPIClient *)sharedClient;
 - (BOOL)isAuthenticated;
+- (NSString *)authenticatedUserName;
 - (void)requestPath:(NSString *)path method:(NSString *)method body:(NSDictionary *)body authenticated:(BOOL)authenticated completion:(void (^)(NSData *, NSHTTPURLResponse *, NSError *))completion;
 - (void)logoutWithCompletion:(void (^)(NSError *))completion;
 - (void)meWithCompletion:(void (^)(NSDictionary *, NSError *))completion;

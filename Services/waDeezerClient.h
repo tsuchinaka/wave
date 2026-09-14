@@ -8,6 +8,7 @@ extern NSString * const waDeezerAuthenticationDidChangeNotification;
 @property (nonatomic, copy, readonly) NSString *favoritesPlaylistIdentifier;
 + (waDeezerClient *)sharedClient;
 - (BOOL)isAuthenticated;
+- (void)validateAuthenticationWithCompletion:(void (^)(BOOL valid, NSError *error))completion;
 - (void)authorizeWithCompletion:(void (^)(NSDictionary *user, NSError *error))completion;
 - (void)setARL:(NSString *)arl completion:(void (^)(NSError *error))completion;
 - (void)logout;

@@ -91,7 +91,7 @@ static NSString *waStreamString(id value) {
     }
     NSString *arl = [waKeychainStore deezerARL];
     if (!arl.length) {
-        if (completion) completion([self errorWithMessage:@"Connect a Deezer account first." code:401]);
+        if (completion) completion([self errorWithMessage:@"Connect your Deezer account first." code:401]);
         return;
     }
     // Same call Minuga uses: empty body, token in query left empty.
@@ -164,7 +164,7 @@ static NSString *waStreamString(id value) {
     NSString *license = nil;
     @synchronized (self) { license = [self.licenseToken copy]; }
     if (!license.length) {
-        if (completion) completion(nil, [self errorWithMessage:@"Connect a Deezer account first." code:401]);
+        if (completion) completion(nil, [self errorWithMessage:@"Connect your Deezer account first." code:401]);
         return;
     }
     NSDictionary *body = @{@"license_token": license,

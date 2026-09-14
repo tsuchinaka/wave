@@ -1,6 +1,7 @@
 #import "waEqualizer.h"
 #import <libkern/OSAtomic.h>
 #import <math.h>
+#import <sched.h>
 
 static const double waEQFrequencies[WA_EQ_BANDS] = { 110.0, 250.0, 1000.0, 4000.0, 12000.0 };
 
@@ -89,7 +90,19 @@ void waEQInit(waEqualizer *eq, double sampleRate) {
     eq->coeffBlock = coeffs;
     eq->stateBlock = state;
     eq->resetPending = 0;
+    eq->activeReaders = 0;
     OSMemoryBarrier();
+}
+
+void waEQDeinit(waEqualizer *eq) {
+    if (!eq) return;
+    // The mixer disposes its AudioQueue before calling this, so no render
+    // callback can still hold either block.
+    free((void *)eq->coeffBlock);
+    free((void *)eq->stateBlock);
+    eq->coeffBlock = NULL;
+    eq->stateBlock = NULL;
+    eq->activeReaders = 0;
 }
 
 static NSObject *waEQLock(void) {
@@ -146,8 +159,7 @@ void waEQSetGains(waEqualizer *eq, const float *gains) {
             if (c > 0.01f || c < -0.01f) allZero = 0;
         }
         // Called every track with the same prefs: skip the malloc/publish
-        // when nothing changed (old blocks intentionally leak, so each
-        // redundant call was a leak per track).
+        // when nothing changed.
         if (unchanged && ((allZero != 0) == (eq->bypass != 0))) return;
         for (int i = 0; i < WA_EQ_BANDS; i++) eq->gains[i] = clamped[i];
         eq->bypass = allZero;
@@ -178,14 +190,16 @@ void waEQSetGains(waEqualizer *eq, const float *gains) {
         block->outputTrim = trim;
         block->bypass = allZero;
         OSMemoryBarrier();
-        // Atomic publish; old blocks leak (tiny, bounded by UI edits) to
-        // avoid freeing memory the render thread may still be reading.
+        // Atomic publish. The render-side reader count makes it safe to
+        // reclaim the old immutable block after the swap.
         void *old = NULL;
         do {
             old = eq->coeffBlock;
             OSMemoryBarrier();
-        } while (!OSAtomicCompareAndSwapPtr(old, block, &eq->coeffBlock));
+        } while (!OSAtomicCompareAndSwapPtrBarrier(old, block, &eq->coeffBlock));
         OSMemoryBarrier();
+        while (OSAtomicAdd32Barrier(0, &eq->activeReaders) != 0) sched_yield();
+        free(old);
     }
 }
 
@@ -200,11 +214,15 @@ void waEQReset(waEqualizer *eq) {
 
 void waEQProcess(waEqualizer *eq, SInt16 *samples, UInt32 frames) {
     if (!eq || !samples || frames == 0) return;
+    OSAtomicAdd32Barrier(1, &eq->activeReaders);
     OSMemoryBarrier();
     waEQCoeffBlock *coeffs = (waEQCoeffBlock *)eq->coeffBlock;
     waEQStateBlock *state = (waEQStateBlock *)eq->stateBlock;
     OSMemoryBarrier();
-    if (!coeffs || !state || coeffs->bypass) return;
+    if (!coeffs || !state || coeffs->bypass) {
+        OSAtomicAdd32Barrier(-1, &eq->activeReaders);
+        return;
+    }
     float trim = coeffs->outputTrim;
     if (!(trim > 0.0f) || trim > 1.0f) trim = 1.0f;
     // Adopt a pending reset on the render thread (only writer of state).
@@ -240,6 +258,7 @@ void waEQProcess(waEqualizer *eq, SInt16 *samples, UInt32 frames) {
             if (fabsf(state->z2[i][ch]) < 1e-30f) state->z2[i][ch] = 0.0f;
         }
     }
+    OSAtomicAdd32Barrier(-1, &eq->activeReaders);
 }
 
 double waEQFrequencyForBand(int band) {

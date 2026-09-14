@@ -13,6 +13,9 @@
 @interface waLikedSongsViewController ()
 @property (nonatomic, strong) NSArray *songs;
 @property (nonatomic, assign) BOOL downloadReloadScheduled;
+@property (nonatomic, strong) UIView *downloadHeaderView;
+@property (nonatomic, strong) UIButton *downloadAllButton;
+@property (nonatomic, strong) UIActivityIndicatorView *loadingIndicator;
 @end
 
 @implementation waLikedSongsViewController
@@ -36,10 +39,33 @@
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
     longPress.minimumPressDuration = 0.55;
     [self.tableView addGestureRecognizer:longPress];
+    [self buildDownloadHeader];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(likesChanged:) name:waMediaLikeDidChangeNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(downloadsChanged:) name:waDownloadManagerDidChangeNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(themeDidChange:) name:waThemeDidChangeNotification object:nil];
     [waTheme applyToView:self.view];
+}
+
+- (void)updateSongs:(NSArray *)songs {
+    self.songs = [songs copy] ?: @[];
+    [self setLoadingActive:NO];
+    [self.tableView reloadData];
+}
+
+- (void)setLoadingActive:(BOOL)active {
+    if (active) {
+        if (!self.loadingIndicator) {
+            self.loadingIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+            self.loadingIndicator.hidesWhenStopped = YES;
+            self.loadingIndicator.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+            [self.view addSubview:self.loadingIndicator];
+        }
+        self.loadingIndicator.center = CGPointMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds));
+        [self.view bringSubviewToFront:self.loadingIndicator];
+        [self.loadingIndicator startAnimating];
+    } else {
+        [self.loadingIndicator stopAnimating];
+    }
 }
 
 - (NSArray *)playableSongs {
@@ -63,6 +89,74 @@
     NSArray *items = [self playableSongs];
     [waAudioPlayer sharedPlayer].shuffleEnabled = YES;
     if (items.count) [[waAudioPlayer sharedPlayer] playItem:items[0] fromContext:items title:self.title];
+}
+
+#pragma mark - Download
+
+// Bulk download entry point. Album/playlist detail pages expose Download in
+// their info card; Liked Songs had none, so this header mirrors that action.
+- (void)buildDownloadHeader {
+    CGFloat width = self.view.bounds.size.width;
+    if (width <= 0.0) width = self.tableView.bounds.size.width;
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, 56.0)];
+    header.backgroundColor = [waTheme backgroundColor];
+    header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    button.frame = CGRectMake(12.0, 8.0, MAX(0.0, width - 24.0), 40.0);
+    button.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [button setTitle:@"Download All" forState:UIControlStateNormal];
+    [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    button.titleLabel.font = [waTheme mediumFontOfSize:14.0];
+    button.backgroundColor = [waTheme barColor];
+    button.layer.cornerRadius = 8.0;
+    button.clipsToBounds = YES;
+    [button addTarget:self action:@selector(downloadAll:) forControlEvents:UIControlEventTouchUpInside];
+    [header addSubview:button];
+    self.downloadHeaderView = header;
+    self.downloadAllButton = button;
+    self.tableView.tableHeaderView = header;
+}
+
+- (void)downloadAll:(id)sender {
+    (void)sender;
+    waDownloadManager *manager = [waDownloadManager sharedManager];
+    NSUInteger queued = 0;
+    NSUInteger skipped = 0;
+    for (waMediaItem *item in self.songs) {
+        NSString *identifier = item.trackId.length ? item.trackId : item.identifier;
+        if (!identifier.length) continue;
+        waDownload *existing = [manager downloadForIdentifier:identifier];
+        waDownloadState state = existing ? existing.state : waDownloadStateNotFound;
+        // enqueueDownloadWithItem: is idempotent, but skipping here gives the
+        // user an accurate count instead of re-adding completed/active rows.
+        if (state == waDownloadStateCompleted || state == waDownloadStateQueued || state == waDownloadStateDownloading) {
+            skipped++;
+            continue;
+        }
+        [manager enqueueDownloadWithItem:item category:waDownloadCategorySong contextIdentifier:identifier];
+        queued++;
+    }
+    NSString *message = nil;
+    if (queued == 0) {
+        message = skipped > 0 ? @"All liked songs are already downloaded." : @"No songs to download.";
+    } else if (skipped > 0) {
+        message = [NSString stringWithFormat:@"Queued %lu songs. %lu already downloaded.", (unsigned long)queued, (unsigned long)skipped];
+    } else {
+        message = [NSString stringWithFormat:@"Queued %lu songs.", (unsigned long)queued];
+    }
+    [[[UIAlertView alloc] initWithTitle:@"Download All" message:message delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    // tableHeaderView keeps its own size; stretch it on rotation.
+    UIView *header = self.downloadHeaderView;
+    if (!header) return;
+    CGFloat width = self.tableView.bounds.size.width;
+    if (fabs(header.frame.size.width - width) > 0.5) {
+        header.frame = CGRectMake(0.0, 0.0, width, header.frame.size.height);
+        self.tableView.tableHeaderView = header;
+    }
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { (void)tableView; (void)section; return self.songs.count; }
@@ -121,6 +215,8 @@
 - (void)themeDidChange:(NSNotification *)notification {
     (void)notification;
     self.tableView.backgroundColor = [waTheme backgroundColor];
+    self.downloadHeaderView.backgroundColor = [waTheme backgroundColor];
+    self.downloadAllButton.backgroundColor = [waTheme barColor];
     if (self.view.window) [self.tableView reloadData];
 }
 - (void)reloadDownloadTable { self.downloadReloadScheduled = NO; if (self.view.window) [self updateVisibleDownloadStates]; }

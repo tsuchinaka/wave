@@ -43,6 +43,8 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 @property (nonatomic, strong) NSArray *playlists;
 @property (nonatomic, strong) NSArray *songs;
 @property (nonatomic, assign) BOOL songsLoaded;
+@property (nonatomic, assign) BOOL songsLoading;
+@property (nonatomic, strong) NSMutableArray *songsLoadCallbacks;
 @property (nonatomic, assign) BOOL loading;
 @property (nonatomic, assign) NSUInteger loadGeneration;
 @property (nonatomic, strong) NSArray *filteredItems;
@@ -62,6 +64,7 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
         _artists = @[];
         _playlists = @[];
         _songs = @[];
+        _songsLoadCallbacks = [NSMutableArray array];
         _shelves = [NSMutableArray array];
         _shortcutButtons = [NSMutableArray array];
     }
@@ -174,9 +177,16 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 }
 
 - (void)showLikedSongs {
+    // Push immediately. The liked-songs fetch (getAllFeedbacks + getListData)
+    // can take a couple of seconds, and blocking the push on it made the
+    // shortcut look frozen. Show the list + spinner and fill it on arrival.
+    waLikedSongsViewController *controller = [[waLikedSongsViewController alloc] initWithSongs:self.songs ?: @[]];
+    [self.navigationController pushViewController:controller animated:YES];
+    if (self.songsLoaded) return;
+    [controller setLoadingActive:YES];
+    __weak waLikedSongsViewController *weakController = controller;
     [self ensureSongsLoaded:^{
-        waLikedSongsViewController *controller = [[waLikedSongsViewController alloc] initWithSongs:self.songs ?: @[]];
-        [self.navigationController pushViewController:controller animated:YES];
+        [weakController updateSongs:self.songs ?: @[]];
     }];
 }
 
@@ -213,6 +223,9 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
         if (!error && list) weakSelf.playlists = [weakSelf itemsFromDictionaries:list];
         [weakSelf finishLoad];
     }];
+    // Prefetch liked songs alongside the shelves so the "Liked Songs"
+    // shortcut opens instantly instead of waiting on its own round trip.
+    [self ensureSongsLoaded:nil];
 }
 
 - (void)finishLoad {
@@ -223,15 +236,23 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 
 - (void)ensureSongsLoaded:(void (^)(void))completion {
     if (self.songsLoaded) { if (completion) completion(); return; }
+    // Coalesce callers: prefetch + a shortcut tap must not fire two identical
+    // network round trips.
+    if (completion) [self.songsLoadCallbacks addObject:[completion copy]];
+    if (self.songsLoading) return;
+    self.songsLoading = YES;
     __weak typeof(self) weakSelf = self;
     [[waAPIClient sharedClient] likedSongsWithCompletion:^(NSDictionary *result, NSError *error) {
         waLibraryViewController *self2 = weakSelf;
-        if (!self2) { if (completion) completion(); return; }
+        if (!self2) return;
+        self2.songsLoading = NO;
         if (!error && result) {
             self2.songs = [self2 itemsFromDictionaries:result[@"songs"]];
             self2.songsLoaded = YES;
         }
-        if (completion) completion();
+        NSArray *callbacks = [self2.songsLoadCallbacks copy];
+        [self2.songsLoadCallbacks removeAllObjects];
+        for (void (^callback)(void) in callbacks) callback();
     }];
 }
 
@@ -505,8 +526,8 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
     self.resultsTableView.hidden = YES;
     [self.emptyView configureWithIcon:[UIImage imageNamed:@"tab-wave-library"]
                                 title:@"Library"
-                             subtitle:@"Connect to Deezer to see your music."
-                          actionTitle:@"Connect"
+                             subtitle:@"Connect Deezer to see your music."
+                          actionTitle:@"Connect Deezer"
                                target:self
                                action:@selector(presentLogin)];
     [self.emptyView setLoading:NO];
@@ -518,7 +539,12 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
         (void)error;
         [self loadLibrary];
     }];
-    [self presentViewController:login animated:YES completion:nil];
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:login];
+    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    [waTheme applyLayoutCompatibilityToViewController:navigation];
+    navigation.view.backgroundColor = [waTheme backgroundColor];
+    [waTheme applyToView:navigation.navigationBar];
+    [self presentViewController:navigation animated:YES completion:nil];
 }
 
 #pragma mark - UITableViewDataSource / Delegate (results)

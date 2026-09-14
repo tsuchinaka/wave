@@ -2,8 +2,8 @@
 
 @interface waPreferences : NSObject
 + (waPreferences *)sharedPreferences;
-// Serverless: apiURL/apiPort removed (no bytebox)
-// Kept as deprecated stubs for migration, always returns nil/5000
+// Optional legacy bridge configuration. Serverless Deezer paths do not use
+// these values, and no default bridge endpoint is supplied.
 @property (nonatomic, copy) NSString *apiURL;
 @property (nonatomic, assign) NSUInteger apiPort;
 @property (nonatomic, assign) NSUInteger maximumParallelDownloads;

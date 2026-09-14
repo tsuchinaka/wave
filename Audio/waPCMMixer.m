@@ -103,6 +103,8 @@ static void waPCMMixerOutputCallback(void *userData, AudioQueueRef audioQueue, A
         AudioQueueDispose(_audioQueue, true);
         _audioQueue = NULL;
     }
+    waEQDeinit(&_eq);
+    waCompDeinit(&_comp);
     free(_currentScratch);
     free(_pendingScratch);
 }

@@ -382,7 +382,7 @@ static BOOL waCatalogTracksAreDownloaded(NSArray *tracks) {
 
 - (void)catalogInfoCardDidPressLike:(waCatalogInfoCard *)card {
     if (![[waAPIClient sharedClient] isAuthenticated]) {
-        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Sign in to save this item." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Connect Deezer to save this item." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
         return;
     }
     BOOL liked = !self.mediaItem.isLiked;
@@ -426,7 +426,7 @@ static BOOL waCatalogTracksAreDownloaded(NSArray *tracks) {
 - (void)catalogTrackCellDidPressLike:(waCatalogTrackCell *)cell item:(waMediaItem *)item {
     if (!item) return;
     if (![[waAPIClient sharedClient] isAuthenticated]) {
-        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Sign in to save songs to your library." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+        [[[UIAlertView alloc] initWithTitle:@"Like" message:@"Connect Deezer to save songs to your library." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
         return;
     }
     BOOL liked = !item.isLiked;

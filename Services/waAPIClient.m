@@ -83,6 +83,7 @@ typedef id (^waAPIResponseProcessor)(NSData *data, NSHTTPURLResponse *response, 
     return self;
 }
 - (BOOL)isAuthenticated { return [[waDeezerClient sharedClient] isAuthenticated]; }
+- (NSString *)authenticatedUserName { return [waDeezerClient sharedClient].userName; }
 - (NSString *)pathWithSelectedSource:(NSString *)path {
     if (!path.length) return path;
     // Use a dummy base to parse query items reliably on iOS 6.
@@ -101,7 +102,10 @@ typedef id (^waAPIResponseProcessor)(NSData *data, NSHTTPURLResponse *response, 
 }
 - (NSURL *)urlForPath:(NSString *)path {
     NSString *base = self.baseURL.length ? self.baseURL : [waPreferences sharedPreferences].apiURL;
-    if (!base.length) base = @"http://192.168.1.17";
+    // The app is serverless. A legacy bridge is allowed only when an
+    // explicit baseURL is configured by a caller; never silently target a
+    // stale LAN host.
+    if (!base.length) return nil;
     NSURL *u = [NSURL URLWithString:base];
     if (!u.scheme.length || !u.host.length) return nil;
     NSString *host = u.host;
@@ -127,7 +131,13 @@ typedef id (^waAPIResponseProcessor)(NSData *data, NSHTTPURLResponse *response, 
 - (void)requestPathInBackground:(NSString *)path method:(NSString *)method body:(NSDictionary *)body authenticated:(BOOL)authenticated completion:(void (^)(NSData *, NSHTTPURLResponse *, NSError *))completion {
     dispatch_async(waAPIWorkQueue(), ^{
          NSString *selectedPath = [self pathWithSelectedSource:path];
-         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[self urlForPath:selectedPath]];
+         NSURL *url = [self urlForPath:selectedPath];
+         if (!url) {
+             NSError *configurationError = [NSError errorWithDomain:waAPIErrorDomain code:503 userInfo:@{NSLocalizedDescriptionKey:@"The legacy API endpoint is not configured."}];
+             if (completion) completion(nil, nil, configurationError);
+             return;
+         }
+         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
         NSString *requestMethod = method ?: @"GET";
         request.HTTPMethod = requestMethod;
         request.timeoutInterval = 30;

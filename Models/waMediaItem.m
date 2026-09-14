@@ -125,8 +125,11 @@ static NSTimeInterval waMediaDurationValue(id value) {
     item.trackId = waMediaFirstString(dictionary, @[@"trackId"]);
     item.isrc = waMediaFirstString(dictionary, @[@"isrc", @"ISRC", @"isrc_code"]);
     if (!item.isrc.length) item.isrc = waMediaFirstString(rawDeezer, @[@"isrc", @"ISRC", @"isrc_code"]);
-    item.artistIdentifier = waMediaFirstString(dictionary, @[@"artistId", @"artist_id", @"artistBrowseId", @"artist_browse_id"]);
-    item.albumIdentifier = waMediaFirstString(dictionary, @[@"albumId", @"album_id", @"albumBrowseId", @"album_browse_id"]);
+    // waDZSong/waDZAlbum emit "artistIdentifier"/"albumIdentifier"; without
+    // these keys the IDs are dropped and the context actions (Go to Artist /
+    // Go to Album) never appear.
+    item.artistIdentifier = waMediaFirstString(dictionary, @[@"artistIdentifier", @"artistId", @"artist_id", @"artistBrowseId", @"artist_browse_id"]);
+    item.albumIdentifier = waMediaFirstString(dictionary, @[@"albumIdentifier", @"albumId", @"album_id", @"albumBrowseId", @"album_browse_id"]);
     item.artistName = waMediaFirstString(dictionary, @[@"artistName", @"artist", @"author"]);
     item.albumName = waMediaFirstString(dictionary, @[@"albumName", @"album"]);
     item.releaseYear = waMediaFirstString(dictionary, @[@"releaseYear", @"release_year", @"year", @"releaseDate", @"release_date"]);

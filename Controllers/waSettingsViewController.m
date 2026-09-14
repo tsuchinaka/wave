@@ -11,7 +11,6 @@
 #import "../Services/waTheme.h"
 #import "../Services/waLastFMClient.h"
 #import "waDeezerLoginViewController.h"
-#import "../Services/waDeezerClient.h"
 #import "../Services/waRPCClient.h"
 #import "../Services/waAudioPlayer.h"
 #import "../Services/waDebugLog.h"
@@ -151,11 +150,11 @@ typedef NS_ENUM(NSInteger, waSettingsItemKind) {
     // Account
     waSettingsItem *deezerAccount = [waSettingsItem itemWithTitle:@"Deezer account" kind:waSettingsItemKindPush];
      deezerAccount.detail = ^NSString *{
-        if ([[waDeezerClient sharedClient] isAuthenticated]) {
-            NSString *name = [waDeezerClient sharedClient].userName;
+        if ([[waAPIClient sharedClient] isAuthenticated]) {
+            NSString *name = [[waAPIClient sharedClient] authenticatedUserName];
             return name.length ? [NSString stringWithFormat:@"%@ · Deezer", name] : @"Connected to Deezer";
         }
-        return @"Sign in to Deezer";
+        return @"Connect Deezer";
     };
     deezerAccount.select = ^{ [weakSelf selectProfile]; };
     waSettingsItem *lastfmAccount = [waSettingsItem itemWithTitle:@"Last.fm" kind:waSettingsItemKindPush];
@@ -455,10 +454,10 @@ typedef NS_ENUM(NSInteger, waSettingsItemKind) {
 }
 
 - (void)selectProfile {
-    if (![[waDeezerClient sharedClient] isAuthenticated]) {
+    if (![[waAPIClient sharedClient] isAuthenticated]) {
         __weak waSettingsViewController *weakSelf = self;
         waDeezerLoginViewController *login = [[waDeezerLoginViewController alloc] initWithCompletion:^(NSError *error) {
-            if (error && error.code != NSUserCancelledError) [weakSelf showMessage:@"Deezer Login" message:error.localizedDescription];
+            if (error && error.code != NSUserCancelledError) [weakSelf showMessage:@"Deezer" message:error.localizedDescription];
             if (!error) { [weakSelf.tableView reloadData]; }
         }];
         UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:login];
@@ -466,9 +465,12 @@ typedef NS_ENUM(NSInteger, waSettingsItemKind) {
         return;
     }
     __weak waSettingsViewController *weakSelf = self;
-    waAction *logout = [waAction actionWithIdentifier:@"settings.logout" title:@"Logout" destructive:YES availability:nil handler:^(id object) {
+    waAction *logout = [waAction actionWithIdentifier:@"settings.logout" title:@"Disconnect Deezer" destructive:YES availability:nil handler:^(id object) {
         (void)object;
-        [[waDeezerClient sharedClient] logout]; [weakSelf.tableView reloadData];
+        [[waAPIClient sharedClient] logoutWithCompletion:^(NSError *error) {
+            (void)error;
+            [weakSelf.tableView reloadData];
+        }];
     }];
     waAction *profile = [waAction actionWithIdentifier:@"settings.profile" title:@"View profile" handler:^(id object) {
         (void)object;

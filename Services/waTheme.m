@@ -155,9 +155,11 @@ static void waSetGuardedBarColor(id bar, NSString *setterName, id color) {
     NSDictionary *normal;
     NSDictionary *highlighted;
     if ([self isModernSystem]) {
-        // iOS 7 native: flat text, no shadow
-        normal = @{ NSFontAttributeName: [self mediumFontOfSize:14.0], NSForegroundColorAttributeName: [UIColor whiteColor] };
-        highlighted = @{ NSFontAttributeName: [self boldFontOfSize:14.0], NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.65] };
+        NSShadow *shadow = [[NSShadow alloc] init];
+        shadow.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+        shadow.shadowOffset = CGSizeMake(0.0, 1.0);
+        normal = @{ NSFontAttributeName: [self mediumFontOfSize:14.0], NSForegroundColorAttributeName: [UIColor whiteColor], NSShadowAttributeName: shadow };
+        highlighted = @{ NSFontAttributeName: [self boldFontOfSize:14.0], NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.65], NSShadowAttributeName: shadow };
     } else {
         normal = @{ UITextAttributeFont: [self mediumFontOfSize:14.0], UITextAttributeTextColor: [UIColor whiteColor], UITextAttributeTextShadowColor: [UIColor colorWithWhite:0.0 alpha:0.55], UITextAttributeTextShadowOffset: [NSValue valueWithUIOffset:UIOffsetMake(0, 1)] };
         highlighted = @{ UITextAttributeFont: [self boldFontOfSize:14.0], UITextAttributeTextColor: [UIColor colorWithWhite:1.0 alpha:0.65], UITextAttributeTextShadowColor: [UIColor colorWithWhite:0.0 alpha:0.55], UITextAttributeTextShadowOffset: [NSValue valueWithUIOffset:UIOffsetMake(0, 1)] };
@@ -166,6 +168,17 @@ static void waSetGuardedBarColor(id bar, NSString *setterName, id color) {
     [appearance setTitleTextAttributes:normal forState:UIControlStateNormal];
     [appearance setTitleTextAttributes:highlighted forState:UIControlStateHighlighted];
     [appearance setTitleTextAttributes:highlighted forState:UIControlStateSelected];
+}
+
+static void waDrawVerticalGradient(CGContextRef context, CGRect rect, UIColor *baseColor, CGFloat topMultiplier, CGFloat bottomMultiplier) {
+    UIColor *topColor = waThemeAdjustedColor(baseColor, topMultiplier, 1.0);
+    UIColor *middleColor = baseColor;
+    UIColor *bottomColor = waThemeAdjustedColor(baseColor, bottomMultiplier, 1.0);
+    NSArray *colors = @[(id)topColor.CGColor, (id)middleColor.CGColor, (id)bottomColor.CGColor];
+    CGFloat locations[] = {0.0, 0.48, 1.0};
+    CGGradientRef gradient = CGGradientCreateWithColors(NULL, (__bridge CFArrayRef)colors, locations);
+    CGContextDrawLinearGradient(context, gradient, CGPointMake(CGRectGetMidX(rect), CGRectGetMinY(rect)), CGPointMake(CGRectGetMidX(rect), CGRectGetMaxY(rect)), 0);
+    CGGradientRelease(gradient);
 }
 
 static UIImage *waButtonImage(UIColor *baseColor, BOOL highlighted, BOOL selected, BOOL disabled) {
@@ -183,9 +196,10 @@ static UIImage *waButtonImage(UIColor *baseColor, BOOL highlighted, BOOL selecte
         UIColor *effectiveBase = disabled ? [UIColor colorWithWhite:0.35 alpha:0.72] : baseColor;
         if (highlighted && !disabled) effectiveBase = waThemeAdjustedColor(effectiveBase, 0.70, 1.0);
         else if (selected && !disabled) effectiveBase = waThemeAdjustedColor(effectiveBase, 0.82, 1.0);
-        // Fully flat iOS 7 style: solid fill, no gradient, no gloss.
-        [effectiveBase setFill];
-        UIRectFill((CGRect){CGPointZero, size});
+        waDrawVerticalGradient(UIGraphicsGetCurrentContext(), (CGRect){CGPointZero, size}, effectiveBase, 1.16, 0.72);
+        // Shared gloss keeps the button language identical on iOS 6 and 7+.
+        [[UIColor colorWithWhite:1.0 alpha:0.16] setFill];
+        UIRectFill(CGRectMake(0.0, 0.0, size.width, size.height * 0.42));
         [[UIColor colorWithWhite:0.05 alpha:disabled ? 0.35 : (selected ? 0.88 : 0.78)] setStroke];
         path.lineWidth = 1.0;
         [path stroke];
@@ -208,9 +222,9 @@ static UIImage *waSegmentImage(UIColor *base, BOOL selected, BOOL highlighted) {
         CGFloat fillMultiplier = selected ? 1.0 : 0.55;
         if (highlighted) fillMultiplier = selected ? 0.70 : 0.45;
         UIColor *fill = [UIColor colorWithHue:hue saturation:saturation brightness:MAX(0.0, MIN(1.0, brightness * fillMultiplier)) alpha:1.0];
-        // Fully flat iOS 7 style: solid fill, no gradient, no gloss.
-        [fill setFill];
-        UIRectFill((CGRect){CGPointZero, size});
+        waDrawVerticalGradient(UIGraphicsGetCurrentContext(), (CGRect){CGPointZero, size}, fill, 1.12, 0.70);
+        [[UIColor colorWithWhite:1.0 alpha:selected ? 0.18 : 0.10] setFill];
+        UIRectFill(CGRectMake(0.0, 0.0, size.width, size.height * 0.42));
         [[UIColor colorWithWhite:0.08 alpha:0.75] setStroke];
         path.lineWidth = 1.0;
         [path stroke];
@@ -226,6 +240,36 @@ static UIImage *waSegmentDividerImage(void) {
     UIRectFill(CGRectMake(0.0, 0.0, 1.0, 30.0));
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
+    return image;
+}
+
+static UIImage *waTabBarBackgroundImage(UIColor *baseColor) {
+    NSString *key = [NSString stringWithFormat:@"theme-tabbar:%@", [waTheme renderCacheKeyForColor:baseColor]];
+    return [waTheme cachedImageForKey:key renderer:^UIImage *{
+        CGSize size = CGSizeMake(64.0, 49.0);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+        CGRect rect = (CGRect){CGPointZero, size};
+        waDrawVerticalGradient(UIGraphicsGetCurrentContext(), rect, baseColor, 1.08, 0.54);
+        [[UIColor colorWithWhite:1.0 alpha:0.14] setFill];
+        UIRectFill(CGRectMake(0.0, 0.0, size.width, 2.0));
+        [[UIColor colorWithWhite:0.0 alpha:0.42] setFill];
+        UIRectFill(CGRectMake(0.0, size.height - 1.0, size.width, 1.0));
+        UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return [image resizableImageWithCapInsets:UIEdgeInsetsMake(0.0, 1.0, 0.0, 1.0)];
+    }];
+}
+
+static UIImage *waTabBarShadowImage(void) {
+    static UIImage *image;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(1.0, 1.0), NO, 0.0);
+        [[UIColor clearColor] setFill];
+        UIRectFill(CGRectMake(0.0, 0.0, 1.0, 1.0));
+        image = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+    });
     return image;
 }
 
@@ -245,9 +289,14 @@ static UIImage *waSegmentDividerImage(void) {
     NSDictionary *normalAttributes;
     NSDictionary *selectedAttributes;
     if ([self isModernSystem]) {
-        // iOS 7 native: flat segmented titles, no shadow/emboss
-        normalAttributes = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: [self primaryTextColor] };
-        selectedAttributes = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: [UIColor whiteColor] };
+        NSShadow *normalShadow = [[NSShadow alloc] init];
+        normalShadow.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+        normalShadow.shadowOffset = CGSizeMake(0.0, 1.0);
+        NSShadow *selectedShadow = [[NSShadow alloc] init];
+        selectedShadow.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+        selectedShadow.shadowOffset = CGSizeMake(0.0, 1.0);
+        normalAttributes = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: [self primaryTextColor], NSShadowAttributeName: normalShadow };
+        selectedAttributes = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: [UIColor whiteColor], NSShadowAttributeName: selectedShadow };
     } else {
         normalAttributes = @{ UITextAttributeFont: font, UITextAttributeTextColor: [self primaryTextColor], UITextAttributeTextShadowColor: [UIColor colorWithWhite:1.0 alpha:0.55], UITextAttributeTextShadowOffset: [NSValue valueWithUIOffset:UIOffsetMake(0, 1)] };
         selectedAttributes = @{ UITextAttributeFont: font, UITextAttributeTextColor: [UIColor whiteColor], UITextAttributeTextShadowColor: [UIColor colorWithWhite:0.0 alpha:0.55], UITextAttributeTextShadowOffset: [NSValue valueWithUIOffset:UIOffsetMake(0, -1)] };
@@ -394,13 +443,8 @@ static NSString *waThemeNormalizedNameCache;
     label.font = [self boldFontOfSize:14.0];
     label.textColor = [self secondaryTextColor];
     label.backgroundColor = [UIColor clearColor];
-    if ([self isModernSystem]) {
-        label.shadowColor = nil;
-        label.shadowOffset = CGSizeZero;
-    } else {
-        label.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.45];
-        label.shadowOffset = CGSizeMake(0.0, 1.0);
-    }
+    label.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+    label.shadowOffset = CGSizeMake(0.0, 1.0);
 }
 
 + (void)applySkeuomorphicStyleToButton:(UIButton *)button {
@@ -439,7 +483,10 @@ static NSString *waThemeNormalizedNameCache;
             bar.barStyle = UIBarStyleBlack;
             waSetGuardedBarColor(bar, @"setBarTintColor:", [self barColor]);
             bar.tintColor = [UIColor whiteColor];
-            bar.titleTextAttributes = @{ NSFontAttributeName: [self boldFontOfSize:18.0], NSForegroundColorAttributeName: [UIColor whiteColor] };
+            NSShadow *shadow = [[NSShadow alloc] init];
+            shadow.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+            shadow.shadowOffset = CGSizeMake(0.0, 1.0);
+            bar.titleTextAttributes = @{ NSFontAttributeName: [self boldFontOfSize:18.0], NSForegroundColorAttributeName: [UIColor whiteColor], NSShadowAttributeName: shadow };
         } else {
             bar.tintColor = [self barColor];
             bar.barStyle = UIBarStyleBlack;
@@ -447,9 +494,11 @@ static NSString *waThemeNormalizedNameCache;
         }
     } else if ([view isKindOfClass:[UITabBar class]]) {
         UITabBar *tabBar = (UITabBar *)view;
+        tabBar.backgroundImage = waTabBarBackgroundImage([self backgroundColor]);
+        tabBar.shadowImage = waTabBarShadowImage();
         if ([self isModernSystem]) {
-            // iOS 7+: translucent dark blur, accent selected glyph.
-            waSetGuardedProperty(tabBar, @"setTranslucent:", @"translucent", @(YES));
+            // Use the same opaque custom surface on iOS 6 and iOS 7+.
+            waSetGuardedProperty(tabBar, @"setTranslucent:", @"translucent", @(NO));
             waSetGuardedBarColor(tabBar, @"setBarTintColor:", [self backgroundColor]);
             tabBar.tintColor = [UIColor whiteColor];
             tabBar.selectedImageTintColor = [self barColor];
@@ -457,11 +506,10 @@ static NSString *waThemeNormalizedNameCache;
             tabBar.barStyle = UIBarStyleBlack;
             tabBar.selectionIndicatorImage = nil;
         }
-        // iOS 6: keep the native black glossy bar (see waAppDelegate).
     } else if ([view isKindOfClass:[UIToolbar class]]) {
         UIToolbar *toolbar = (UIToolbar *)view;
         if ([self isModernSystem]) {
-            waSetGuardedProperty(toolbar, @"setTranslucent:", @"translucent", @(YES));
+            waSetGuardedProperty(toolbar, @"setTranslucent:", @"translucent", @(NO));
             waSetGuardedBarColor(toolbar, @"setBarTintColor:", [self barColor]);
             toolbar.tintColor = [UIColor whiteColor];
             toolbar.barStyle = UIBarStyleBlack;

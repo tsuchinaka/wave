@@ -1,7 +1,7 @@
 # Guía de Interfaces iOS 6 — Skeuomorphism
 
-> SDK objetivo: `iPhoneOS6.1.sdk` en `/home/main/theos/sdks/iPhoneOS6.1.sdk`
-> Proyecto: `wave` (`com.bytebox.wave`) | `TARGET := iphone:clang:6.1:6.1` (`Makefile:1`)
+> SDK de compilación: `iPhoneOS7.1.sdk` en `/home/main/theos/sdks/iPhoneOS7.1.sdk`; deployment iOS 6.1
+> Proyecto: `wave` (`com.bytebox.wave`) | `TARGET := iphone:clang:7.1:6.1` (`Makefile:1`)
 > Última versión skeuomórfica antes del redesign flat de iOS 7 (19 Sep 2012, codename Sundance). Sucesor: iOS 7 (18 Sep 2013).
 
 ---

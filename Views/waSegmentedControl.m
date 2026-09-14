@@ -13,9 +13,15 @@ static UIImage *waSegmentButtonImage(UIColor *baseColor, BOOL selected, BOOL hig
         CGFloat multiplier = selected ? 1.0 : 0.55;
         if (highlighted) multiplier = 0.70;
         UIColor *fill = [UIColor colorWithHue:hue saturation:saturation brightness:MIN(1.0, brightness * multiplier) alpha:1.0];
-        // Fully flat iOS 7 style: solid fill, no gradient, no gloss.
-        [fill setFill];
-        CGContextFillRect(context, (CGRect){CGPointZero, size});
+        UIColor *top = [UIColor colorWithHue:hue saturation:saturation brightness:MIN(1.0, brightness * MIN(1.0, multiplier * 1.16)) alpha:1.0];
+        UIColor *bottom = [UIColor colorWithHue:hue saturation:saturation brightness:MAX(0.0, brightness * multiplier * 0.72) alpha:1.0];
+        NSArray *colors = @[(id)top.CGColor, (id)fill.CGColor, (id)bottom.CGColor];
+        CGFloat locations[] = {0.0, 0.48, 1.0};
+        CGGradientRef gradient = CGGradientCreateWithColors(NULL, (__bridge CFArrayRef)colors, locations);
+        CGContextDrawLinearGradient(context, gradient, CGPointMake(0.0, 0.0), CGPointMake(0.0, size.height), 0);
+        CGGradientRelease(gradient);
+        [[UIColor colorWithWhite:1.0 alpha:selected ? 0.18 : 0.10] setFill];
+        CGContextFillRect(context, CGRectMake(0.0, 0.0, size.width, size.height * 0.42));
         UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
         return [image resizableImageWithCapInsets:UIEdgeInsetsMake(0.0, 8.0, 0.0, 8.0)];

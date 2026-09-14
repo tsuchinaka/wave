@@ -71,6 +71,7 @@ static UIImage *waLyricsImage(UIColor *color) {
 @property (nonatomic, strong) NSTimer *overlayHideTimer;
 @property (nonatomic, strong) MPVolumeView *airplayView;
 @property (nonatomic, strong) UIButton *airplayButton;
+@property (nonatomic, strong) UIView *airplayContainer;
 @property (nonatomic, strong) UIActivityIndicatorView *loadingSpinner;
 @property (nonatomic, strong) UIView *loadingBackdrop;
 @property (nonatomic, strong) NSTimer *updateTimer;
@@ -108,13 +109,15 @@ static UIButton *waFirstRouteButtonInView(UIView *view) {
     [super layoutSubviews];
     waUnhideRouteButtonsInView(self);
     UIButton *route = waFirstRouteButtonInView(self);
-    if (route && (route.bounds.size.width <= 0.0 || route.bounds.size.height <= 0.0)) {
-        CGSize imageSize = route.currentImage.size;
-        if (imageSize.width <= 0.0 || imageSize.height <= 0.0) imageSize = CGSizeMake(24.0, 18.0);
-        route.frame = CGRectMake((self.bounds.size.width - imageSize.width) / 2.0,
-                                 (self.bounds.size.height - imageSize.height) / 2.0,
-                                 imageSize.width, imageSize.height);
-    }
+    if (!route) return;
+    // Always recenter: MPVolumeView's own pass can leave the route button off
+    // the midline inside a narrow custom bar-button view.
+    CGSize size = route.bounds.size;
+    if (size.width <= 0.0 || size.height <= 0.0) size = route.currentImage.size;
+    if (size.width <= 0.0 || size.height <= 0.0) size = CGSizeMake(24.0, 18.0);
+    route.frame = CGRectMake((self.bounds.size.width - size.width) / 2.0,
+                             (self.bounds.size.height - size.height) / 2.0,
+                             size.width, size.height);
 }
 
 @end
@@ -332,8 +335,12 @@ static UIButton *waFirstRouteButtonInView(UIView *view) {
     // Plan B: our own button, always visible even with no devices around.
     // A hidden MPVolumeView stays in the hierarchy purely as the picker
     // trigger — taps are forwarded to its internal route button.
+    // Height is synced to the live nav bar in viewDidLayoutSubviews; flexible
+    // height keeps the glyph on the bar's midline instead of a fixed 32pt box.
     UIView *airplayContainer = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 40.0, 32.0)];
+    airplayContainer.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.airplayView = [[waAirPlayVolumeView alloc] initWithFrame:airplayContainer.bounds];
+    self.airplayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.airplayView.showsVolumeSlider = NO;
     self.airplayView.showsRouteButton = YES;
     self.airplayView.alpha = 0.0;
@@ -341,10 +348,14 @@ static UIButton *waFirstRouteButtonInView(UIView *view) {
     [airplayContainer addSubview:self.airplayView];
     self.airplayButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.airplayButton.frame = airplayContainer.bounds;
+    self.airplayButton.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.airplayButton.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
+    self.airplayButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
     self.airplayButton.adjustsImageWhenHighlighted = YES;
     self.airplayButton.accessibilityLabel = @"AirPlay";
     [self.airplayButton addTarget:self action:@selector(airplayPressed:) forControlEvents:UIControlEventTouchUpInside];
     [airplayContainer addSubview:self.airplayButton];
+    self.airplayContainer = airplayContainer;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:airplayContainer];
 
     // waAudioPlayer re-emits every engine state change as
@@ -514,6 +525,18 @@ static UIButton *waFirstRouteButtonInView(UIView *view) {
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self forceAirPlayVisible];
+    // Match the live nav bar height (orientation/status bar change it). With
+    // the glyph centered inside, this keeps the AirPlay icon on the midline
+    // instead of sitting a few points high in a fixed 32pt box.
+    CGFloat barHeight = CGRectGetHeight(self.navigationController.navigationBar.bounds);
+    if (barHeight > 0.0 && self.airplayContainer &&
+        fabs(CGRectGetHeight(self.airplayContainer.frame) - barHeight) > 0.5) {
+        CGRect airplayFrame = self.airplayContainer.frame;
+        airplayFrame.size.height = barHeight;
+        self.airplayContainer.frame = airplayFrame;
+        self.airplayView.frame = self.airplayContainer.bounds;
+        self.airplayButton.frame = self.airplayContainer.bounds;
+    }
     CGFloat width = self.view.bounds.size.width;
     CGFloat height = self.view.bounds.size.height;
     BOOL landscape = width > height;

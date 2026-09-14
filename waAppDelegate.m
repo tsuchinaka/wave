@@ -11,9 +11,17 @@
 #import "Services/waTheme.h"
 #import "Services/waDebugLog.h"
 #import "Services/waLastFMClient.h"
+#import "Services/waDeezerClient.h"
+#import "Controllers/waDeezerLoginViewController.h"
 
 @interface waAppDelegate () <UITabBarControllerDelegate>
 @property (nonatomic, strong) UINavigationController *playerTabController;
+@property (nonatomic, strong) UINavigationController *authNavigationController;
+@property (nonatomic, assign) BOOL authenticationValidationInFlight;
+@property (nonatomic, assign) BOOL authenticationValidated;
+- (void)enforceDeezerAuthentication;
+- (void)deezerAuthenticationDidChange:(NSNotification *)notification;
+- (void)requiredLoginDidFinishWithError:(NSError *)error;
 @end
 
 @interface waPlayerNavigationController : UINavigationController
@@ -167,9 +175,91 @@ static void waCrashHandler(NSException *exception) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [weakSelf hideTabBarLabelsInView:tabs.tabBar];
         [weakSelf applyThemeToNavigationControllers];
-    });
+	});
 	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(themeDidChange:) name:waThemeDidChangeNotification object:nil];
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(deezerAuthenticationDidChange:) name:waDeezerAuthenticationDidChangeNotification object:nil];
+	[self enforceDeezerAuthentication];
 	return YES;
+}
+
+- (void)enforceDeezerAuthentication {
+    if (![NSThread isMainThread]) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf enforceDeezerAuthentication]; });
+        return;
+    }
+    waDeezerClient *deezer = [waDeezerClient sharedClient];
+    BOOL hasCredential = [deezer isAuthenticated];
+    if (!hasCredential) self.authenticationValidated = NO;
+
+    // Keep the mandatory controller stable while it is visible. The login
+    // controller itself performs the first validation after saving a new ARL.
+    if (self.authNavigationController.presentingViewController) return;
+
+    if (hasCredential) {
+        if (self.authenticationValidated || self.authenticationValidationInFlight) return;
+        self.authenticationValidationInFlight = YES;
+        __weak typeof(self) weakSelf = self;
+        [deezer validateAuthenticationWithCompletion:^(BOOL valid, NSError *error) {
+            waAppDelegate *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.authenticationValidationInFlight = NO;
+            if (valid) {
+                strongSelf.authenticationValidated = YES;
+                return;
+            }
+            strongSelf.authenticationValidated = NO;
+            // Preserve a valid ARL during a temporary offline/DNS failure;
+            // only a Deezer rejection clears it in waDeezerClient.
+            if (error && error.code != 401 && error.code != 403 && [deezer isAuthenticated]) {
+                strongSelf.authenticationValidated = YES;
+                [[waDebugLog sharedLog] log:@"Deezer validation deferred after transient error: %@", error.localizedDescription ?: @"unknown"];
+            }
+            [strongSelf enforceDeezerAuthentication];
+        }];
+        return;
+    }
+
+    // A successful login dismisses itself. Clear a completed gate before
+    // creating a new one, but never stack two mandatory login controllers.
+    if (self.authNavigationController) {
+        if (self.authNavigationController.presentingViewController) return;
+        self.authNavigationController = nil;
+    }
+    UIViewController *presenter = self.rootViewController;
+    while (presenter.presentedViewController) presenter = presenter.presentedViewController;
+    if (!presenter) return;
+
+    __weak typeof(self) weakSelf = self;
+    waDeezerLoginViewController *login = [[waDeezerLoginViewController alloc] initWithCompletion:^(NSError *error) {
+        [weakSelf requiredLoginDidFinishWithError:error];
+    } required:YES];
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:login];
+    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    navigation.view.backgroundColor = [waTheme backgroundColor];
+    [waTheme applyLayoutCompatibilityToViewController:navigation];
+    [waTheme applyToView:navigation.navigationBar];
+    self.authNavigationController = navigation;
+    [presenter presentViewController:navigation animated:NO completion:nil];
+}
+
+- (void)requiredLoginDidFinishWithError:(NSError *)error {
+    if (error) {
+        self.authenticationValidated = NO;
+        return;
+    }
+    self.authenticationValidated = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        waAppDelegate *strongSelf = weakSelf;
+        if (strongSelf && !strongSelf.authNavigationController.presentingViewController) strongSelf.authNavigationController = nil;
+    });
+}
+
+- (void)deezerAuthenticationDidChange:(NSNotification *)notification {
+    (void)notification;
+    self.authenticationValidated = NO;
+    [self enforceDeezerAuthentication];
 }
 
 - (BOOL)application:(UIApplication *)application handleOpenURL:(NSURL *)url {
