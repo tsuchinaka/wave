@@ -47,6 +47,7 @@ typedef NS_ENUM(NSInteger, waSearchDisplaySection) {
 @property (nonatomic, strong) NSArray *allSections;
 @property (nonatomic, strong) NSArray *offlineItems;
 @property (nonatomic, strong) NSArray *hasMore;
+@property (nonatomic, strong) NSArray *searchPageMetadata;
 @property (nonatomic, strong) NSArray *displaySections;
 @property (nonatomic, assign) waSearchFilter selectedFilter;
 @property (nonatomic, strong) UIView *stateView;
@@ -189,6 +190,7 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     self.sections = @[@[], @[], @[], @[]];
     self.allSections = @[@[], @[], @[], @[]];
     self.hasMore = @[@NO, @NO, @NO, @NO];
+    self.searchPageMetadata = @[@{}, @{}, @{}, @{}];
     self.displaySections = @[];
     self.selectedFilter = waSearchFilterAll;
 
@@ -198,7 +200,7 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
 
     self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectZero];
     self.searchBar.delegate = self;
-    self.searchBar.placeholder = @"Songs, albums and artists";
+    self.searchBar.placeholder = @"Search Deezer";
     if ([waTheme isModernSystem]) {
         // Native: search bar lives in nav bar, not custom chrome
         self.navigationItem.titleView = self.searchBar;
@@ -376,7 +378,7 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     if (!self.searchChrome) return;
     CGFloat width = self.view.bounds.size.width;
     BOOL modern = [waTheme isModernSystem];
-    CGFloat filterHeight = 40.0;
+    CGFloat filterHeight = 36.0;
     CGRect previousHeaderFrame = self.filterHeaderView.frame;
     if (modern) {
         // Native nav bar owns the search field — no custom chrome
@@ -400,9 +402,9 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
         CGFloat x = 12.0;
         for (UIButton *button in self.filterButtons) {
             CGFloat buttonWidth = [self cachedWidthForFilterButton:button];
-            button.layer.cornerRadius = 15.0;
-            button.frame = CGRectMake(x, 5.0, buttonWidth, 30.0);
-            x += buttonWidth + 8.0;
+            button.layer.cornerRadius = 14.0;
+            button.frame = CGRectMake(x, 4.0, buttonWidth, 28.0);
+            x += buttonWidth + 6.0;
         }
         self.filterScrollView.contentSize = CGSizeMake(MAX(width + 1.0, x + 4.0), self.filterScrollView.bounds.size.height);
         if (self.tableView.tableHeaderView != self.filterHeaderView ||
@@ -416,9 +418,9 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     CGFloat x = 12.0;
     for (UIButton *button in self.filterButtons) {
         CGFloat buttonWidth = [self cachedWidthForFilterButton:button];
-        button.layer.cornerRadius = 15.0;
-        button.frame = CGRectMake(x, 5.0, buttonWidth, 30.0);
-        x += buttonWidth + 8.0;
+        button.layer.cornerRadius = 14.0;
+        button.frame = CGRectMake(x, 4.0, buttonWidth, 28.0);
+        x += buttonWidth + 6.0;
     }
     self.filterScrollView.contentSize = CGSizeMake(MAX(width + 1.0, x + 4.0), self.filterScrollView.bounds.size.height);
     // Modern: table starts at 0, under nav bar handled by system insets
@@ -438,7 +440,7 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     NSString *title = button.titleLabel.text ?: @"";
     NSNumber *cached = self.filterButtonWidths[title];
     if (cached) return cached.doubleValue;
-    CGFloat width = MAX(58.0, [title sizeWithFont:button.titleLabel.font].width + 28.0);
+    CGFloat width = MAX(54.0, [title sizeWithAttributes:@{NSFontAttributeName: button.titleLabel.font}].width + 24.0);
     if (!self.filterButtonWidths) self.filterButtonWidths = [NSMutableDictionary dictionary];
     self.filterButtonWidths[title] = @(width);
     return width;
@@ -450,11 +452,14 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
         button.backgroundColor = selected ? [waTheme barColor] : [UIColor clearColor];
         button.layer.borderColor = (selected ? [waTheme barColor] : [waTheme secondaryTextColor]).CGColor;
         [button setTitleColor:selected ? [UIColor whiteColor] : [waTheme secondaryTextColor] forState:UIControlStateNormal];
+        button.accessibilityTraits = UIAccessibilityTraitButton | (selected ? UIAccessibilityTraitSelected : 0);
+        button.accessibilityValue = selected ? @"Selected" : nil;
     }
 }
 
 - (void)filterButtonTapped:(UIButton *)button {
     if (button.tag == self.selectedFilter) return;
+    waSearchFilter previousFilter = self.selectedFilter;
     self.selectedFilter = (waSearchFilter)button.tag;
     [self updateFilterButtonAppearance];
     if (self.selectedFilter == waSearchFilterOffline) {
@@ -466,6 +471,22 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
         [self reloadOfflineItems];
         [self.tableView setContentOffset:CGPointZero animated:NO];
         return;
+    }
+    if (previousFilter == waSearchFilterOffline) {
+        // Offline search is local and may have a different query than the
+        // last Deezer search. Never reveal those stale remote sections when
+        // switching back to an online filter.
+        self.lastSearchedQuery = nil;
+        self.sections = @[@[], @[], @[], @[]];
+        self.allSections = @[@[], @[], @[], @[]];
+        self.hasMore = @[@NO, @NO, @NO, @NO];
+        self.searchPageMetadata = @[@{}, @{}, @{}, @{}];
+        if (self.query.length >= 2) {
+            [self beginSearch:nil];
+            [self.tableView setContentOffset:CGPointZero animated:NO];
+            return;
+        }
+        [self updateRecentsVisibility];
     }
     [self rebuildDisplaySections];
     [self.tableView setContentOffset:CGPointZero animated:NO];
@@ -527,7 +548,7 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     NSString *query = [self.query copy];
     BOOL truncated = type >= 0 && type < self.allSections.count &&
         [self.allSections[type] count] >= self.searchFetchLimit &&
-        self.searchFetchLimit < 50 && [query isEqualToString:self.lastSearchedQuery];
+        self.searchFetchLimit < 50;
     if (!truncated || !query.length) {
         if (completion) completion();
         return;
@@ -540,10 +561,11 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     NSUInteger generation = self.searchGeneration;
     [self setLoading:YES];
     __weak waListViewController *weakSelf = self;
-    [[waAPIClient sharedClient] searchQuery:query type:types[type] limit:50 completion:^(NSArray *rows, NSError *error) {
+    [[waAPIClient sharedClient] searchPageForQuery:query type:types[type] limit:50 index:0 strict:NO completion:^(NSDictionary *page, NSError *error) {
         waListViewController *controller = weakSelf;
         if (!controller || generation != controller.searchGeneration || ![query isEqualToString:controller.query]) return;
         [controller setLoading:NO];
+        NSArray *rows = [page[@"items"] isKindOfClass:[NSArray class]] ? page[@"items"] : @[];
         if (!error && [rows isKindOfClass:[NSArray class]]) {
             NSMutableArray *items = [NSMutableArray array];
             for (NSDictionary *dictionary in rows) {
@@ -560,8 +582,11 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
             NSMutableArray *sections = [controller.sections mutableCopy];
             sections[type] = [[reranked subarrayWithRange:NSMakeRange(0, MIN(5, reranked.count))] mutableCopy];
             controller.sections = sections;
+            NSMutableArray *metadata = [controller.searchPageMetadata mutableCopy] ?: [NSMutableArray arrayWithObjects:@{}, @{}, @{}, @{}, nil];
+            metadata[type] = @{ @"next": [page[@"next"] isKindOfClass:[NSString class]] ? page[@"next"] : @"", @"total": @([page[@"total"] respondsToSelector:@selector(unsignedIntegerValue)] ? [page[@"total"] unsignedIntegerValue] : reranked.count) };
+            controller.searchPageMetadata = metadata;
             NSMutableArray *more = [controller.hasMore mutableCopy];
-            if (type < (NSInteger)more.count) more[type] = @(reranked.count > 5);
+            if (type < (NSInteger)more.count) more[type] = @(reranked.count > 5 || ([page[@"next"] isKindOfClass:[NSString class]] && [page[@"next"] length]));
             controller.hasMore = more;
         }
         if (completion) completion();
@@ -578,7 +603,10 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
         NSArray *items = controller.allSections[type];
         if (!items.count) return;
         NSString *query = [controller.query copy];
-        waMediaResultsViewController *results = [[waMediaResultsViewController alloc] initWithItems:items type:(waMediaItemType)type title:title query:query];
+        NSDictionary *metadata = type < controller.searchPageMetadata.count && [controller.searchPageMetadata[type] isKindOfClass:[NSDictionary class]] ? controller.searchPageMetadata[type] : @{};
+        NSString *nextURL = [metadata[@"next"] isKindOfClass:[NSString class]] ? metadata[@"next"] : @"";
+        NSUInteger total = [metadata[@"total"] respondsToSelector:@selector(unsignedIntegerValue)] ? [metadata[@"total"] unsignedIntegerValue] : items.count;
+        waMediaResultsViewController *results = [[waMediaResultsViewController alloc] initWithItems:items type:(waMediaItemType)type title:title query:query nextURL:nextURL totalCount:total];
         [controller.navigationController pushViewController:results animated:YES];
     }];
 }
@@ -664,6 +692,7 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
         self.sections = @[@[], @[], @[], @[]];
         self.allSections = @[@[], @[], @[], @[]];
         self.hasMore = @[@NO, @NO, @NO, @NO];
+        self.searchPageMetadata = @[@{}, @{}, @{}, @{}];
         [self rebuildDisplaySections];
         [self setLoading:NO];
         [self updateRecentsVisibility];
@@ -682,6 +711,7 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     self.sections = @[@[], @[], @[], @[]];
     self.allSections = @[@[], @[], @[], @[]];
     self.hasMore = @[@NO, @NO, @NO, @NO];
+    self.searchPageMetadata = @[@{}, @{}, @{}, @{}];
     [self rebuildDisplaySections];
     self.stateLabel.text = @"";
     self.stateLabel.hidden = YES;
@@ -741,11 +771,15 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     __block BOOL firstWaveRendered = NO;
     NSArray *types = @[@"song", @"album", @"artist", @"playlist"];
     for (NSInteger section = 0; section < 4; section++) {
-        [[waAPIClient sharedClient] searchQuery:query type:types[section] limit:limit completion:^(NSArray *rows, NSError *error) {
+        [[waAPIClient sharedClient] searchPageForQuery:query type:types[section] limit:limit index:0 strict:NO completion:^(NSDictionary *page, NSError *error) {
             if (generation != self.searchGeneration || ![query isEqualToString:self.query]) return;
             if (section == waMediaItemTypeSong) songDone = YES;
             else if (section == waMediaItemTypeArtist) artistDone = YES;
             if (error) failed = YES;
+            NSArray *rows = [page[@"items"] isKindOfClass:[NSArray class]] ? page[@"items"] : @[];
+            NSMutableArray *metadata = [self.searchPageMetadata mutableCopy] ?: [NSMutableArray arrayWithObjects:@{}, @{}, @{}, @{}, nil];
+            metadata[section] = @{ @"next": [page[@"next"] isKindOfClass:[NSString class]] ? page[@"next"] : @"", @"total": @([page[@"total"] respondsToSelector:@selector(unsignedIntegerValue)] ? [page[@"total"] unsignedIntegerValue] : rows.count) };
+            self.searchPageMetadata = metadata;
             if ([rows isKindOfClass:[NSArray class]]) {
                 for (NSDictionary *dictionary in rows) {
                     if (![dictionary isKindOfClass:[NSDictionary class]]) continue;
@@ -796,9 +830,12 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
     for (NSInteger rankSection = 0; rankSection < 4; rankSection++) {
         NSArray *reranked = [self rankedSearchItems:allFound[rankSection] query:query type:rankSection];
         allFound[rankSection] = [reranked mutableCopy];
-        // A full page means the server may hold more: the filter
-        // tab and "more" then upgrade this type to limit 50.
-        more[rankSection] = @([allFound[rankSection] count] > 5 || ([allFound[rankSection] count] >= limit && limit < 50));
+        // All shows five-item previews. A visible See all affordance is
+        // useful even when the server has no next page, because the filtered
+        // screen still exposes the complete first page.
+        NSDictionary *metadata = rankSection < self.searchPageMetadata.count && [self.searchPageMetadata[rankSection] isKindOfClass:[NSDictionary class]] ? self.searchPageMetadata[rankSection] : @{};
+        BOOL serverHasMore = [metadata[@"next"] isKindOfClass:[NSString class]] && [metadata[@"next"] length] > 0;
+        more[rankSection] = @([allFound[rankSection] count] > 5 || serverHasMore);
         found[rankSection] = [[reranked subarrayWithRange:NSMakeRange(0, MIN(5, reranked.count))] mutableCopy];
     }
     self.sections = found;
@@ -1029,9 +1066,9 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
         NSArray *items = [self itemsForDisplaySection:path.section];
         NSString *title = [self titleForDisplaySection:path.section];
         NSString *layout = type == waMediaItemTypeArtist ? @"circle" : @"square";
-        // The All view is a compact preview; the filter pills are the way to
-        // open a complete result set, so do not show trailing chevrons here.
-        BOOL showsMore = NO;
+        // All is a compact preview, but the user still needs a direct path to
+        // the complete result set without having to discover the filter pill.
+        BOOL showsMore = type < self.hasMore.count && [self.hasMore[type] boolValue];
         NSDictionary *section = @{ @"title": title, @"subtitle": @"", @"layout": layout, @"items": items, @"showsMore": @(showsMore) };
         __weak waListViewController *weakSelf = self;
         cell.sectionView.compact = YES;
@@ -1103,14 +1140,14 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
 }
 
 - (CGFloat)heightForHorizontalSection:(NSInteger)section {
-    return section == waMediaItemTypeArtist ? 230.0 : 295.0;
+    return section == waMediaItemTypeArtist ? 220.0 : 280.0;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)path {
     (void)tableView;
     if (self.showingRecents) return 44.0;
     if (path.section >= self.displaySections.count) return 0.0;
-    if ([self isStaticTitleRow:path]) return 38.0;
+    if ([self isStaticTitleRow:path]) return 34.0;
     NSInteger displaySection = [self.displaySections[path.section] integerValue];
     if ([self isHorizontalDisplaySection:path.section]) return [self heightForHorizontalSection:[self mediaTypeForDisplaySection:path.section]];
     return displaySection == waSearchDisplayTracks ? 68.0 : 58.0;
@@ -1150,9 +1187,9 @@ static waMediaItem *waSearchItemFromDownload(waDownload *download) {
 - (void)selectSearchItem:(waMediaItem *)item context:(NSArray *)context {
     if (!item) return;
     if (item.type == waMediaItemTypeSong) {
-        // A direct track selection starts a single-item queue. Genius then
-        // owns the continuation instead of using the search results context.
-        [[waAudioPlayer sharedPlayer] playItem:item];
+        // Search previews and full result pages now share the same queue
+        // semantics as Home and the dedicated result controller.
+        [[waAudioPlayer sharedPlayer] playItem:item fromContext:context title:@"Search"];
     } else if (item.type == waMediaItemTypePlaylist) {
         NSDictionary *playlist = @{ @"id": item.identifier ?: @"", @"title": item.title ?: @"Playlist", @"name": item.title ?: @"Playlist", @"description": @"", @"thumbnailURL": item.thumbnailURL ?: @"", @"artwork": item.thumbnailURL ?: @"", @"liked": @(item.isLiked) };
         [self.navigationController pushViewController:[[waPlaylistViewController alloc] initWithPlaylist:playlist ownerIsCurrentUser:NO] animated:YES];

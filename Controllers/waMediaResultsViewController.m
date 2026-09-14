@@ -11,12 +11,26 @@
 #import "../Views/waPlaceholder.h"
 #import "../Services/waDownloadManager.h"
 
+static NSUInteger waSearchNextIndexFromURL(NSString *nextURL, NSUInteger fallback) {
+    if (!nextURL.length) return fallback;
+    NSRange marker = [nextURL rangeOfString:@"index="];
+    if (marker.location == NSNotFound) return fallback;
+    NSString *value = [nextURL substringFromIndex:NSMaxRange(marker)];
+    NSRange ampersand = [value rangeOfString:@"&"];
+    if (ampersand.location != NSNotFound) value = [value substringToIndex:ampersand.location];
+    long long parsed = [value longLongValue];
+    return parsed >= 0 ? (NSUInteger)parsed : fallback;
+}
+
 @interface waMediaResultsViewController ()
 @property (nonatomic, copy) NSArray *items;
 @property (nonatomic, assign) waMediaItemType mediaType;
 @property (nonatomic, copy) NSString *query;
 @property (nonatomic, assign) BOOL loadingMore;
 @property (nonatomic, assign) BOOL exhausted;
+@property (nonatomic, copy) NSString *nextURL;
+@property (nonatomic, assign) NSUInteger nextIndex;
+@property (nonatomic, assign) NSUInteger totalCount;
 @property (nonatomic, strong) UIButton *moreButton;
 @property (nonatomic, assign) BOOL downloadReloadScheduled;
 - (BOOL)usesHorizontalSection;
@@ -33,11 +47,18 @@
 }
 
 - (id)initWithItems:(NSArray *)items type:(waMediaItemType)type title:(NSString *)title query:(NSString *)query {
+    return [self initWithItems:items type:type title:title query:query nextURL:nil totalCount:0];
+}
+
+- (id)initWithItems:(NSArray *)items type:(waMediaItemType)type title:(NSString *)title query:(NSString *)query nextURL:(NSString *)nextURL totalCount:(NSUInteger)totalCount {
     if ((self = [super initWithStyle:UITableViewStyleGrouped])) {
         _items = [items copy] ?: @[];
         _mediaType = type;
         _query = [query copy];
-        _exhausted = !_query.length;
+        _nextURL = [nextURL copy];
+        _nextIndex = waSearchNextIndexFromURL(_nextURL, _items.count);
+        _totalCount = totalCount;
+        _exhausted = !_query.length || (!_nextURL.length && (!_totalCount || _items.count >= _totalCount));
         self.title = [title copy];
     }
     return self;
@@ -194,16 +215,17 @@
 #pragma mark - Pagination
 
 - (void)updateMoreFooter {
-    if (!self.query.length || self.exhausted || [self usesHorizontalSection]) {
+    if (!self.query.length || self.exhausted) {
         self.tableView.tableFooterView = nil;
         return;
     }
     if (!self.moreButton) {
         self.moreButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.moreButton.frame = CGRectMake(0.0, 0.0, self.view.bounds.size.width, 44.0);
+        self.moreButton.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         self.moreButton.titleLabel.font = [waTheme boldFontOfSize:15.0];
         [self.moreButton addTarget:self action:@selector(loadMoreResults:) forControlEvents:UIControlEventTouchUpInside];
     }
+    self.moreButton.frame = CGRectMake(0.0, 0.0, self.tableView.bounds.size.width, 44.0);
     [self.moreButton setTitle:self.loadingMore ? @"Loading…" : @"Load more results" forState:UIControlStateNormal];
     [self.moreButton setTitleColor:[waTheme barColor] forState:UIControlStateNormal];
     self.moreButton.enabled = !self.loadingMore;
@@ -217,26 +239,43 @@
     if (self.mediaType < 0 || self.mediaType >= (NSInteger)types.count) return;
     self.loadingMore = YES;
     [self updateMoreFooter];
-    NSUInteger offset = self.items.count;
+    NSUInteger offset = self.nextURL.length ? self.nextIndex : self.items.count;
     NSString *query = [self.query copy];
     __weak waMediaResultsViewController *weakSelf = self;
-    [[waAPIClient sharedClient] searchQuery:query type:types[self.mediaType] limit:25 index:offset completion:^(NSArray *rows, NSError *error) {
+    [[waAPIClient sharedClient] searchPageForQuery:query type:types[self.mediaType] limit:25 index:offset strict:NO completion:^(NSDictionary *page, NSError *error) {
         waMediaResultsViewController *controller = weakSelf;
         if (!controller || ![query isEqualToString:controller.query]) return;
         controller.loadingMore = NO;
-        if (!error && [rows isKindOfClass:[NSArray class]] && rows.count) {
+        NSArray *rows = [page[@"items"] isKindOfClass:[NSArray class]] ? page[@"items"] : @[];
+        if (!error && [page isKindOfClass:[NSDictionary class]]) {
             NSMutableArray *combined = [controller.items mutableCopy] ?: [NSMutableArray array];
+            NSMutableSet *known = [NSMutableSet set];
+            for (waMediaItem *existing in combined) {
+                NSString *key = existing.identifier.length ? existing.identifier : existing.trackId;
+                if (key.length) [known addObject:key];
+            }
+            NSUInteger before = combined.count;
             for (NSDictionary *dictionary in rows) {
                 if (![dictionary isKindOfClass:[NSDictionary class]]) continue;
                 waMediaItem *item = [waMediaItem itemWithDictionary:dictionary];
                 if (!item) continue;
                 item.type = controller.mediaType;
+                NSString *key = item.identifier.length ? item.identifier : item.trackId;
+                if (key.length && [known containsObject:key]) continue;
+                if (key.length) [known addObject:key];
                 [combined addObject:item];
             }
             controller.items = combined;
-            if (rows.count < 25) controller.exhausted = YES;
-        } else if (!error) {
-            controller.exhausted = YES;
+            NSString *nextURL = [page[@"next"] isKindOfClass:[NSString class]] ? page[@"next"] : @"";
+            NSUInteger total = [page[@"total"] respondsToSelector:@selector(unsignedIntegerValue)] ? [page[@"total"] unsignedIntegerValue] : controller.totalCount;
+            BOOL appended = combined.count > before;
+            BOOL repeatedNext = nextURL.length && [nextURL isEqualToString:controller.nextURL];
+            controller.nextURL = nextURL;
+            controller.nextIndex = waSearchNextIndexFromURL(nextURL, offset + rows.count);
+            controller.totalCount = total;
+            controller.exhausted = !appended || repeatedNext || (!nextURL.length && (!total || combined.count >= total));
+        } else if (error) {
+            [[[UIAlertView alloc] initWithTitle:@"Search" message:error.localizedDescription ?: @"Unable to load more results." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
         }
         [controller updateMoreFooter];
         if (controller.view.window) [controller.tableView reloadData];

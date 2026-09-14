@@ -399,7 +399,7 @@ static NSDictionary *waDZPlaylist(NSDictionary *playlist) {
     NSString *title = waDZString(playlist[@"TITLE"]) ?: waDZString(playlist[@"title"]) ?: waDZString(playlist[@"name"]);
     NSDictionary *user = waDZNestedDictionary(playlist, @"USER") ?: waDZNestedDictionary(playlist, @"user");
     NSString *owner = waDZString(user[@"BLOG_NAME"]) ?: waDZString(user[@"name"]) ?: waDZString(playlist[@"USER_NAME"]);
-    NSString *picture = waDZString(playlist[@"PICTURE_XL"]) ?: waDZString(playlist[@"PICTURE_BIG"]) ?: waDZString(playlist[@"PICTURE"]) ?: waDZString(playlist[@"picture_xl"]) ?: waDZString(playlist[@"picture_big"]) ?: waDZString(playlist[@"picture"]);
+    NSString *picture = waDZString(playlist[@"PICTURE_XL"]) ?: waDZString(playlist[@"PICTURE_BIG"]) ?: waDZString(playlist[@"PICTURE"]) ?: waDZString(playlist[@"PLAYLIST_PICTURE"]) ?: waDZString(playlist[@"picture_xl"]) ?: waDZString(playlist[@"picture_big"]) ?: waDZString(playlist[@"picture"]);
     picture = waDZImageURL(picture, @"playlist") ?: waDZString(playlist[@"picture_xl"]) ?: waDZString(playlist[@"picture"]);
     id trackCount = playlist[@"NB_SONG"] ?: playlist[@"NB_SONGS"] ?: playlist[@"nb_songs"] ?: playlist[@"nb_tracks"] ?: playlist[@"trackCount"];
     NSString *subtitle = owner.length ? owner : (trackCount ? [NSString stringWithFormat:@"%@ songs", trackCount] : @"Playlist");
@@ -419,10 +419,29 @@ static NSDictionary *waDZHomeItem(NSDictionary *object) {
     if ([type isEqualToString:@"artist"]) return waDZArtist(data);
     if ([type isEqualToString:@"playlist"]) return waDZPlaylist(data);
     if ([type isEqualToString:@"smarttracklist"] || [type isEqualToString:@"flow"] || [type isEqualToString:@"flow_mood"] || [type isEqualToString:@"mood"] || [type isEqualToString:@"radio"] || [type isEqualToString:@"channel"] || [type isEqualToString:@"category"] || [type isEqualToString:@"editorial"] || [type isEqualToString:@"genre"]) {
-        NSString *identifier = waDZRawIdentifier(waDZString(data[@"PLAYLIST_ID"]) ?: waDZString(data[@"FLOW_ID"]) ?: waDZString(data[@"CHANNEL_ID"]) ?: waDZString(data[@"id"]) ?: waDZString(data[@"ID"]));
+        NSString *smartTracklistID = waDZString(data[@"SMARTTRACKLIST_ID"]);
+        NSString *flowID = waDZString(data[@"FLOW_ID"]) ?: waDZString(data[@"id"]);
+        NSString *identifier = waDZRawIdentifier(smartTracklistID ?: waDZString(data[@"PLAYLIST_ID"]) ?: flowID ?: waDZString(data[@"CHANNEL_ID"]) ?: waDZString(data[@"ID"]));
         NSString *title = waDZString(data[@"TITLE"]) ?: waDZString(data[@"title"]) ?: waDZString(data[@"NAME"]) ?: waDZString(data[@"name"]) ?: type.capitalizedString;
-        NSString *picture = waDZImageURL(data[@"PICTURE_XL"], @"playlist") ?: waDZImageURL(data[@"PICTURE_BIG"], @"playlist") ?: waDZImageURL(data[@"PICTURE"], @"playlist") ?: waDZString(data[@"cover_xl"]);
-        return @{ @"id": identifier ?: @"", @"identifier": identifier ?: @"", @"title": title, @"name": title, @"subtitle": waDZString(data[@"DESCRIPTION"]) ?: @"", @"thumbnailURL": picture ?: @"", @"type": @3, @"homeKind": type, @"deezerRaw": data };
+        NSDictionary *assets = [data[@"assets"] isKindOfClass:[NSDictionary class]] ? data[@"assets"] : @{};
+        NSString *picture = waDZImageURL(data[@"PICTURE_XL"], @"playlist") ?: waDZImageURL(data[@"PICTURE_BIG"], @"playlist") ?: waDZImageURL(data[@"PICTURE"], @"playlist") ?: waDZImageURL(data[@"cover_xl"], @"playlist") ?: waDZImageURL(assets[@"hardwareSquareIcon"], @"cover") ?: waDZImageURL(assets[@"dynamicPageIcon"], @"cover");
+        NSDictionary *cover = [data[@"COVER"] isKindOfClass:[NSDictionary class]] ? data[@"COVER"] : nil;
+        NSString *coverType = waDZString(cover[@"TYPE"]) ?: @"artist";
+        picture = picture ?: waDZImageURL(cover[@"MD5"], coverType);
+        NSArray *pictures = [data[@"PICTURES"] isKindOfClass:[NSArray class]] ? data[@"PICTURES"] : @[];
+        if (!picture && pictures.count) {
+            NSDictionary *firstPicture = [pictures[0] isKindOfClass:[NSDictionary class]] ? pictures[0] : nil;
+            picture = waDZImageURL(firstPicture[@"MD5"], waDZString(firstPicture[@"TYPE"]) ?: coverType);
+        }
+        BOOL isGenre = [type isEqualToString:@"genre"] || [flowID hasPrefix:@"genre-"];
+        NSString *homeKind = smartTracklistID.length ? @"smarttracklist" : (isGenre ? @"genre" : type);
+        NSString *subtitle = waDZString(data[@"SUBTITLE"]) ?: waDZString(data[@"DESCRIPTION"]) ?: @"";
+        NSMutableDictionary *result = [@{ @"id": identifier ?: @"", @"identifier": identifier ?: @"", @"title": title, @"name": title, @"subtitle": subtitle, @"thumbnailURL": picture ?: @"", @"type": @3, @"homeKind": homeKind, @"deezerRaw": data } mutableCopy];
+        if (smartTracklistID.length) result[@"smartTracklistID"] = smartTracklistID;
+        if (flowID.length && !smartTracklistID.length) result[@"flowConfigID"] = flowID;
+        id trackCount = data[@"NB_SONG"] ?: data[@"NB_SONGS"] ?: data[@"nb_songs"];
+        if (trackCount) result[@"trackCount"] = trackCount;
+        return result;
     }
     return nil;
 }
@@ -439,7 +458,14 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
     for (NSDictionary *object in dataArray) {
         if (![object isKindOfClass:[NSDictionary class]]) continue;
         NSDictionary *normalized = [normalizedType isEqualToString:@"song"] || [normalizedType isEqualToString:@"track"] ? waDZSong(object) : ([normalizedType isEqualToString:@"album"] ? waDZAlbum(object) : ([normalizedType isEqualToString:@"artist"] ? waDZArtist(object) : waDZPlaylist(object)));
-        if (normalized) [items addObject:normalized];
+        if (normalized) {
+            // Search items are cached and retained by several result screens.
+            // The normalizers keep deezerRaw for private/catalogue hydration,
+            // but Search only needs the compact public fields.
+            NSMutableDictionary *slim = [normalized mutableCopy];
+            [slim removeObjectForKey:@"deezerRaw"];
+            [items addObject:slim];
+        }
     }
     // Deezer ranks by popularity (track.rank, artist.nb_fan). The API
     // usually returns relevance order, but re-assert it after
@@ -475,8 +501,8 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
 @property (nonatomic, strong) NSMutableArray *completions;
 @property (nonatomic, weak) waDeezerClient *client;
 @property (nonatomic, assign) BOOL finished;
-- (void)addCompletion:(void (^)(NSArray *items, NSError *error))completion;
-- (void)completeWithItems:(NSArray *)items error:(NSError *)error;
+- (void)addCompletion:(void (^)(NSDictionary *page, NSError *error))completion;
+- (void)completeWithPage:(NSDictionary *)page error:(NSError *)error;
 @end
 
 @implementation waDZSearchTask
@@ -487,11 +513,11 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
     }
     return self;
 }
-- (void)addCompletion:(void (^)(NSArray *items, NSError *error))completion {
+- (void)addCompletion:(void (^)(NSDictionary *page, NSError *error))completion {
     if (!completion) return;
     @synchronized (self) { [_completions addObject:[completion copy]]; }
 }
-- (void)completeWithItems:(NSArray *)items error:(NSError *)error {
+- (void)completeWithPage:(NSDictionary *)page error:(NSError *)error {
     NSArray *blocks = nil;
     @synchronized (self) {
         if (_finished) return;
@@ -503,7 +529,7 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
     [[self client] wa_removeSearchTask:self];
     self.connection = nil;
     waDeezerDispatchMain(^{
-        for (void (^block)(NSArray *, NSError *) in blocks) block(items, error);
+        for (void (^block)(NSDictionary *, NSError *) in blocks) block(page, error);
     });
 }
 - (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
@@ -523,22 +549,31 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
     // have dropped us via cancelSearchRequests (cancelled tasks never
     // reach this delegate, but coalesced completions must still fire).
     [waDeezerParseQueue() addOperationWithBlock:^{
-        NSDictionary *json = payload.length ? [NSJSONSerialization JSONObjectWithData:payload options:0 error:NULL] : nil;
+        NSError *jsonError = nil;
+        id decoded = payload.length ? [NSJSONSerialization JSONObjectWithData:payload options:0 error:&jsonError] : nil;
+        NSDictionary *json = [decoded isKindOfClass:[NSDictionary class]] ? decoded : nil;
         NSError *error = nil;
         if (status < 200 || status >= 300) error = [client errorWithMessage:@"Deezer search failed." code:status ?: 500];
+        if (!error && (jsonError || !json)) error = [client errorWithMessage:@"Deezer returned invalid search data." code:500];
         if (!error && [json[@"error"] isKindOfClass:[NSDictionary class]]) error = [client errorWithMessage:waDZString(json[@"error"][@"message"]) ?: @"Deezer search failed." code:403];
         NSArray *dataArray = [json[@"data"] isKindOfClass:[NSArray class]] ? json[@"data"] : @[];
         NSArray *items = waDZNormalizedSearchItems(dataArray, type);
+        NSNumber *total = [json[@"total"] respondsToSelector:@selector(unsignedIntegerValue)] ? @([json[@"total"] unsignedIntegerValue]) : @(items.count);
+        NSString *next = waDZString(json[@"next"]) ?: @"";
+        NSDictionary *page = @{ @"items": items ?: @[], @"total": total ?: @0, @"next": next };
         if (!error && self.cacheKey.length && client) {
             NSCache *cache = client.searchCache;
-            if (cache) [cache setObject:@{ @"items": items ?: @[], @"date": [NSDate date] } forKey:self.cacheKey];
+            if (cache) {
+                NSDictionary *entry = @{ @"page": page, @"date": [NSDate date] };
+                [cache setObject:entry forKey:self.cacheKey cost:payload.length];
+            }
         }
-        [self completeWithItems:items error:error];
+        [self completeWithPage:page error:error];
     }];
 }
 - (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
     [[waDebugLog sharedLog] log:@"Deezer search HTTP failed: %@ (%@)", self.coalescingKey ?: @"", error.localizedDescription ?: error];
-    [self completeWithItems:nil error:error];
+    [self completeWithPage:@{ @"items": @[], @"total": @0, @"next": @"" } error:error];
 }
 @end
 
@@ -587,6 +622,7 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
         _artistCatalogCache.totalCostLimit = 4 * 1024 * 1024;
         _searchCache = [[NSCache alloc] init];
         _searchCache.countLimit = 60;
+        _searchCache.totalCostLimit = 2 * 1024 * 1024;
         _searchTasks = [NSMutableSet set];
     }
     return self;
@@ -977,9 +1013,16 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
 }
 
 - (void)searchQuery:(NSString *)query type:(NSString *)type limit:(NSUInteger)limit index:(NSUInteger)index strict:(BOOL)strict completion:(void (^)(NSArray *, NSError *))completion {
+    [self searchPageForQuery:query type:type limit:limit index:index strict:strict completion:^(NSDictionary *page, NSError *error) {
+        NSArray *items = [page[@"items"] isKindOfClass:[NSArray class]] ? page[@"items"] : @[];
+        if (completion) completion(items, error);
+    }];
+}
+
+- (void)searchPageForQuery:(NSString *)query type:(NSString *)type limit:(NSUInteger)limit index:(NSUInteger)index strict:(BOOL)strict completion:(void (^)(NSDictionary *, NSError *))completion {
     if (![NSThread isMainThread]) {
         __weak waDeezerClient *weakSelf = self;
-        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf searchQuery:query type:type limit:limit index:index strict:strict completion:completion]; });
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf searchPageForQuery:query type:type limit:limit index:index strict:strict completion:completion]; });
         return;
     }
     NSString *normalizedType = [[type ?: @"song" lowercaseString] copy];
@@ -993,11 +1036,13 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
     NSString *cacheKey = waDZSearchCacheKey(normalizedType, query, clampedLimit, index, strict);
     NSDictionary *cached = [self.searchCache objectForKey:cacheKey];
     if ([cached isKindOfClass:[NSDictionary class]]) {
-        NSArray *cachedItems = cached[@"items"];
+        NSDictionary *cachedPage = [cached[@"page"] isKindOfClass:[NSDictionary class]] ? cached[@"page"] : nil;
+        // Accept entries written by an older build while the process is alive.
+        if (!cachedPage && [cached[@"items"] isKindOfClass:[NSArray class]]) cachedPage = @{ @"items": cached[@"items"], @"total": @([cached[@"items"] count]), @"next": @"" };
         NSDate *cachedDate = cached[@"date"];
-        if ([cachedItems isKindOfClass:[NSArray class]] && [cachedDate isKindOfClass:[NSDate class]] &&
+        if (cachedPage && [cachedDate isKindOfClass:[NSDate class]] &&
             [[NSDate date] timeIntervalSinceDate:cachedDate] < waDZSearchCacheTTL) {
-            NSArray *hit = [cachedItems copy];
+            NSDictionary *hit = [cachedPage copy];
             dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(hit, nil); });
             return;
         } else if (cached) {
@@ -1030,7 +1075,7 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
     }
     if (!task.connection) {
         [[waDebugLog sharedLog] log:@"Deezer search could not start: %@", key];
-        [task completeWithItems:nil error:[self errorWithMessage:@"Deezer search failed." code:500]];
+        [task completeWithPage:@{ @"items": @[], @"total": @0, @"next": @"" } error:[self errorWithMessage:@"Deezer search failed." code:500]];
     } else {
         [[waDebugLog sharedLog] log:@"Deezer search started: %@", key];
     }
@@ -1149,7 +1194,10 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
                 id firstURL = urls.count ? urls[0] : nil;
                 NSString *picture = [firstURL isKindOfClass:[NSDictionary class]] ? waDZString(firstURL[@"url"]) : waDZString(firstURL);
                 if ([picture rangeOfString:@"cdn-images.dzcdn.net"].location != NSNotFound) picture = [picture stringByReplacingOccurrencesOfString:@"cdn-images.dzcdn.net" withString:@"e-cdns-images.dzcdn.net"];
-                if (identifier.length && title.length) [configs addObject:@{@"id": identifier, @"identifier": identifier, @"title": title, @"name": title, @"subtitle": [kind capitalizedString], @"thumbnailURL": picture ?: @"", @"type": @3, @"homeKind": @"flow_mood", @"flowConfigID": identifier}];
+                if (identifier.length && title.length) {
+                    NSString *homeKind = [kind isEqualToString:@"genres"] ? @"genre" : @"flow_mood";
+                    [configs addObject:@{@"id": identifier, @"identifier": identifier, @"title": title, @"name": title, @"subtitle": [kind capitalizedString], @"thumbnailURL": picture ?: @"", @"type": @3, @"homeKind": homeKind, @"flowConfigID": identifier}];
+                }
             }
         }
          waDeezerDispatchMain(^{ if (completion) completion(configs, nil); });
@@ -1168,6 +1216,61 @@ static NSArray *waDZNormalizedSearchItems(NSArray *dataArray, NSString *normaliz
         }
         waDeezerDispatchMain(^{ if (completion) completion(tracks, error); });
     }];
+}
+
+- (void)smartTracklistWithIdentifier:(NSString *)identifier completion:(void (^)(NSDictionary *, NSError *))completion {
+    NSString *smartTracklistID = waDZRawIdentifier(identifier);
+    if (!smartTracklistID.length) {
+        waDeezerDispatchMain(^{ if (completion) completion(nil, [self errorWithMessage:@"Missing smart playlist id." code:400]); });
+        return;
+    }
+
+    __weak waDeezerClient *weakSelf = self;
+    void (^finishWithResponse)(NSDictionary *, NSError *) = ^(NSDictionary *json, NSError *requestError) {
+        waDeezerClient *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSDictionary *results = [json[@"results"] isKindOfClass:[NSDictionary class]] ? json[@"results"] : @{};
+        NSDictionary *data = [results[@"DATA"] isKindOfClass:[NSDictionary class]] ? results[@"DATA"] : ([results[@"data"] isKindOfClass:[NSDictionary class]] ? results[@"data"] : @{});
+        id songsContainer = results[@"SONGS"] ?: results[@"songs"] ?: data[@"SONGS"] ?: data[@"songs"];
+        NSArray *songs = waDZArrayFromContainer(songsContainer);
+        NSMutableArray *normalizedSongs = [NSMutableArray arrayWithCapacity:songs.count];
+        for (NSDictionary *song in songs) {
+            NSDictionary *normalized = waDZSong(song);
+            if (normalized) [normalizedSongs addObject:normalized];
+        }
+
+        NSString *resultIdentifier = waDZRawIdentifier(waDZString(data[@"SMARTTRACKLIST_ID"]) ?: smartTracklistID);
+        NSString *title = waDZString(data[@"TITLE"]) ?: waDZString(data[@"AUTO_GENERATED_TITLE"]) ?: @"Made for you";
+        NSString *description = waDZString(data[@"DESCRIPTION"]) ?: @"";
+        NSString *subtitle = waDZString(data[@"SUBTITLE"]) ?: @"";
+        NSString *picture = waDZImageURL(data[@"PICTURE_XL"], @"playlist") ?: waDZImageURL(data[@"PICTURE_BIG"], @"playlist") ?: waDZImageURL(data[@"PICTURE"], @"playlist");
+        NSDictionary *cover = [data[@"COVER"] isKindOfClass:[NSDictionary class]] ? data[@"COVER"] : nil;
+        picture = picture ?: waDZImageURL(cover[@"MD5"], @"artist");
+        NSArray *pictures = [data[@"PICTURES"] isKindOfClass:[NSArray class]] ? data[@"PICTURES"] : @[];
+        if (!picture && pictures.count) {
+            NSDictionary *firstPicture = [pictures[0] isKindOfClass:[NSDictionary class]] ? pictures[0] : nil;
+            picture = waDZImageURL(firstPicture[@"MD5"], @"artist");
+        }
+        NSMutableDictionary *playlist = [@{ @"id": resultIdentifier ?: @"", @"identifier": resultIdentifier ?: @"", @"title": title, @"name": title, @"description": description, @"subtitle": subtitle, @"thumbnailURL": picture ?: @"", @"type": @3, @"public": @YES, @"smartTracklistID": resultIdentifier ?: @"", @"tracks": normalizedSongs } mutableCopy];
+        if (data[@"NB_SONG"]) playlist[@"trackCount"] = data[@"NB_SONG"];
+        if (requestError || !normalizedSongs.count) {
+            [strongSelf callMethod:@"smartTracklist.getSongs" parameters:@{ @"smarttracklist_id": smartTracklistID } retry:YES completion:^(NSDictionary *songsJSON, NSError *songsError) {
+                NSArray *fallbackSongs = waDZArrayFromContainer(songsJSON[@"results"]);
+                NSMutableArray *fallbackNormalized = [NSMutableArray arrayWithCapacity:fallbackSongs.count];
+                for (NSDictionary *song in fallbackSongs) {
+                    NSDictionary *normalized = waDZSong(song);
+                    if (normalized) [fallbackNormalized addObject:normalized];
+                }
+                if (fallbackNormalized.count) playlist[@"tracks"] = fallbackNormalized;
+                NSError *finalError = fallbackNormalized.count ? nil : (requestError ?: songsError);
+                waDeezerDispatchMain(^{ if (completion) completion(playlist, finalError); });
+            }];
+            return;
+        }
+        waDeezerDispatchMain(^{ if (completion) completion(playlist, nil); });
+    };
+
+    [self callMethod:@"deezer.pageSmartTracklist" parameters:@{ @"smarttracklist_id": smartTracklistID, @"lang": @"en" } retry:YES completion:finishWithResponse];
 }
 
 - (void)homeWithCompletion:(void (^)(NSDictionary *, NSError *))completion {

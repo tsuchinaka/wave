@@ -1,21 +1,21 @@
 # Build Guide — wave + Theos + iPhoneOS7.1.sdk
 
-> Theos: `/home/main/theos` | SDK build: `/home/main/theos/sdks/iPhoneOS7.1.sdk` (1.2G, `iphoneos7.1`) | Deployment: 6.1 (binario único) | Proyecto: `/home/main/projects/wave`
+> Theos: `/home/main/theos` | SDK build: `/home/main/theos/sdks/iPhoneOS7.1.sdk` (1.2G, `iphoneos7.1`) | Deployment: 7.0 (iOS 6 deprecated) | Proyecto: `/home/main/projects/wave`
 > Fallback: `iPhoneOS6.1.sdk` (515M) conservado pero no usado para build.
 
 ## 1. Makefile actual
 
-El Makefile fuerza SDK 7.1 con deployment 6.1 (compat 6.1–7.x, un solo binario):
+El Makefile usa SDK 7.1 con deployment 7.0 (iOS 7+):
 
 ```makefile
-TARGET := iphone:clang:7.1:6.1
+TARGET := iphone:clang:7.1:7.0
 ARCHS = armv7 armv7s
 FINALPACKAGE = 1
 MAKEFLAGS += -j4
 wave_CFLAGS = -fobjc-arc -IVendor ...
 ```
 
-Ver `SDKSettings.plist: MaximumDeploymentTarget=7.1.99` (build) + deployment 6.1 vía TARGET. `ARCHS` incluye `armv7s` para iPhone 5/5c sin perder `armv7` (iPhone 3GS/4).
+Ver `SDKSettings.plist: MaximumDeploymentTarget=7.1.99` (build) + deployment 7.0 vía TARGET. `ARCHS` incluye `armv7s` para iPhone 5/5c y `armv7` para iPhone 4S/5.
 
 ## 2. Compilar
 
@@ -43,7 +43,7 @@ scp packages/com.bytebox.wave_*.deb root@<iphone-ip>:/tmp/
 ssh root@<iphone-ip> "dpkg -i /tmp/com.bytebox.wave_*.deb && killall wave; uicache; killall SpringBoard"
 ```
 
-Requiere `control:1 Package: com.bytebox.wave` y `Architecture: iphoneos-arm`. Probado en `192.168.1.8` (iPhone3,3 iOS 7.1.2) y compatible 6.1.
+Requiere `control:1 Package: com.bytebox.wave` y `Architecture: iphoneos-arm`. Probado en `192.168.1.8` (iPhone3,3 iOS 7.1.2).
 
 ## 4. Añadir nuevos archivos
 

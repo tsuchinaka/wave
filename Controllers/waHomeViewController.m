@@ -2,9 +2,11 @@
 #import "../Services/waAPIClient.h"
 #import "../Services/waTheme.h"
 #import "../Services/waAudioPlayer.h"
+#import "../Audio/waAudioEngine.h"
 #import "../Views/waHomeSectionView.h"
 #import "../Views/waMediaActionSheet.h"
 #import "waMediaDetailViewController.h"
+#import "waMediaResultsViewController.h"
 #import "../Views/waEmptyView.h"
 #import "waPlaylistViewController.h"
 #import "../Models/waMediaItem.h"
@@ -13,13 +15,29 @@
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
 @property (nonatomic, strong) waEmptyView *emptyView;
+@property (nonatomic, strong) UIView *homeHeaderView;
+@property (nonatomic, strong) UILabel *greetingLabel;
+@property (nonatomic, strong) UILabel *headerTitleLabel;
+@property (nonatomic, strong) UILabel *headerSubtitleLabel;
+@property (nonatomic, strong) UIButton *headerActionButton;
 @property (nonatomic, strong) NSArray *sections;
 @property (nonatomic, strong) NSMutableArray *sectionViews;
 @property (nonatomic, strong) NSTimer *renderTimer;
 @property (nonatomic, assign) NSUInteger loadGeneration;
 @property (nonatomic, assign) BOOL loadingHome;
 @property (nonatomic, assign) BOOL renderingSections;
+@property (nonatomic, assign) BOOL headerActionLoading;
+@property (nonatomic, assign) NSInteger headerActionMode;
 @end
+
+typedef NS_ENUM(NSInteger, waHomeHeaderActionMode) {
+    waHomeHeaderActionPlayFlow = 0,
+    waHomeHeaderActionResume = 1,
+    waHomeHeaderActionOpenPlayer = 2
+};
+
+static CGFloat waHomeHeaderHeight(void) { return 84.0; }
+static CGFloat waHomeSectionOriginY(void) { return 12.0 + waHomeHeaderHeight() + 10.0; }
 
 // Home payload cache. Written off-main as a plist file: NSUserDefaults
 // serializes on the calling thread and this payload can be large.
@@ -62,6 +80,7 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     self.scrollView.alwaysBounceVertical = YES;
     self.scrollView.showsVerticalScrollIndicator = NO;
     [self.view addSubview:self.scrollView];
+    [self buildHomeHeader];
     self.refreshControl = [[UIRefreshControl alloc] init];
     self.refreshControl.tintColor = [waTheme barColor];
     [self.refreshControl addTarget:self action:@selector(refreshHome:) forControlEvents:UIControlEventValueChanged];
@@ -71,7 +90,115 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     self.emptyView.hidden = YES;
     [self.view addSubview:self.emptyView];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(themeDidChange:) name:waThemeDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerDidChange:) name:waAudioPlayerDidChangeNotification object:nil];
     [self loadHome];
+}
+
+- (void)buildHomeHeader {
+    self.homeHeaderView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.homeHeaderView.backgroundColor = [UIColor clearColor];
+    [self.scrollView addSubview:self.homeHeaderView];
+
+    self.greetingLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.greetingLabel.backgroundColor = [UIColor clearColor];
+    self.greetingLabel.font = [waTheme secondaryMediumFontOfSize:13.0];
+    self.greetingLabel.textColor = [waTheme secondaryTextColor];
+    self.greetingLabel.numberOfLines = 1;
+    [self.homeHeaderView addSubview:self.greetingLabel];
+
+    self.headerTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.headerTitleLabel.backgroundColor = [UIColor clearColor];
+    self.headerTitleLabel.font = [waTheme extraBoldFontOfSize:24.0];
+    self.headerTitleLabel.textColor = [waTheme primaryTextColor];
+    self.headerTitleLabel.numberOfLines = 1;
+    self.headerTitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.homeHeaderView addSubview:self.headerTitleLabel];
+
+    self.headerSubtitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.headerSubtitleLabel.backgroundColor = [UIColor clearColor];
+    self.headerSubtitleLabel.font = [waTheme secondaryRegularFontOfSize:13.0];
+    self.headerSubtitleLabel.textColor = [waTheme secondaryTextColor];
+    self.headerSubtitleLabel.numberOfLines = 1;
+    self.headerSubtitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.homeHeaderView addSubview:self.headerSubtitleLabel];
+
+    self.headerActionButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.headerActionButton.titleLabel.font = [waTheme mediumFontOfSize:13.0];
+    self.headerActionButton.accessibilityTraits = UIAccessibilityTraitButton;
+    [self.headerActionButton addTarget:self action:@selector(headerActionPressed:) forControlEvents:UIControlEventTouchUpInside];
+    [self.homeHeaderView addSubview:self.headerActionButton];
+    [self updateHomeHeader];
+}
+
+- (NSString *)homeGreeting {
+    NSInteger hour = [[[NSCalendar currentCalendar] components:NSHourCalendarUnit fromDate:[NSDate date]] hour];
+    NSString *greeting = hour < 12 ? @"Good morning" : (hour < 18 ? @"Good afternoon" : @"Good evening");
+    NSString *name = [[waAPIClient sharedClient] authenticatedUserName];
+    return name.length ? [NSString stringWithFormat:@"%@, %@", greeting, name] : greeting;
+}
+
+- (void)updateHomeHeader {
+    if (!self.headerActionButton) return;
+    waAudioPlayer *player = [waAudioPlayer sharedPlayer];
+    waMediaItem *item = player.currentItem;
+    BOOL playing = [waAudioEngine sharedEngine].isPlaying;
+    self.headerActionMode = waHomeHeaderActionPlayFlow;
+    if (item.title.length) {
+        self.greetingLabel.text = playing ? @"Now playing" : @"Continue listening";
+        self.headerTitleLabel.text = item.title;
+        NSString *artist = item.artistName.length ? item.artistName : item.subtitle;
+        self.headerSubtitleLabel.text = artist.length ? artist : (player.queueContextTitle.length ? player.queueContextTitle : @"Your Deezer queue");
+        self.headerActionMode = playing ? waHomeHeaderActionOpenPlayer : waHomeHeaderActionResume;
+    } else {
+        self.greetingLabel.text = [self homeGreeting];
+        self.headerTitleLabel.text = @"Made for you";
+        self.headerSubtitleLabel.text = @"Play your Flow or discover something new.";
+    }
+    if (self.headerActionLoading) {
+        [self.headerActionButton setTitle:@"Loading…" forState:UIControlStateNormal];
+        self.headerActionButton.enabled = NO;
+    } else {
+        NSString *title = self.headerActionMode == waHomeHeaderActionResume ? @"Resume" : (self.headerActionMode == waHomeHeaderActionOpenPlayer ? @"Open player" : @"Play Flow");
+        [self.headerActionButton setTitle:title forState:UIControlStateNormal];
+        self.headerActionButton.enabled = YES;
+    }
+    NSString *actionTitle = self.headerActionMode == waHomeHeaderActionResume ? @"Resume playback" : (self.headerActionMode == waHomeHeaderActionOpenPlayer ? @"Open player" : @"Play your Flow");
+    self.headerActionButton.accessibilityLabel = actionTitle;
+    self.headerActionButton.accessibilityHint = @"Starts playback or opens the player.";
+}
+
+- (void)headerActionPressed:(id)sender {
+    (void)sender;
+    if (self.headerActionLoading) return;
+    if (self.headerActionMode == waHomeHeaderActionResume) {
+        [[waAudioPlayer sharedPlayer] resume];
+        return;
+    }
+    if (self.headerActionMode == waHomeHeaderActionOpenPlayer) {
+        self.tabBarController.selectedIndex = 4;
+        return;
+    }
+
+    self.headerActionLoading = YES;
+    [self updateHomeHeader];
+    __weak waHomeViewController *weakSelf = self;
+    [[waAPIClient sharedClient] flowWithCompletion:^(NSArray *tracks, NSError *error) {
+        waHomeViewController *controller = weakSelf;
+        if (!controller) return;
+        controller.headerActionLoading = NO;
+        NSMutableArray *mediaTracks = [NSMutableArray arrayWithCapacity:tracks.count];
+        for (id object in tracks) {
+            waMediaItem *mediaItem = [object isKindOfClass:[waMediaItem class]] ? object : ([object isKindOfClass:[NSDictionary class]] ? [waMediaItem itemWithDictionary:object] : nil);
+            if (mediaItem) [mediaTracks addObject:mediaItem];
+        }
+        if (error || !mediaTracks.count) {
+            [controller updateHomeHeader];
+            [[[UIAlertView alloc] initWithTitle:@"Flow" message:error.localizedDescription ?: @"No Flow tracks available." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+            return;
+        }
+        [[waAudioPlayer sharedPlayer] playItem:mediaTracks[0] fromContext:mediaTracks title:@"Flow"];
+        [controller updateHomeHeader];
+    }];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -104,6 +231,31 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     return items;
 }
 
+- (void)configureSectionView:(waHomeSectionView *)view withSection:(NSDictionary *)section {
+    if (!view || !section) return;
+    __weak waHomeViewController *weakSelf = self;
+    NSMutableDictionary *displaySection = [section mutableCopy];
+    displaySection[@"items"] = [self mediaItemsFromSection:section];
+    [view configureWithSection:displaySection selection:^(waMediaItem *item, NSArray *context) {
+        waHomeViewController *controller = weakSelf;
+        if (controller) [controller selectHomeItem:item context:context];
+    }];
+    view.longPress = ^(waMediaItem *item, NSArray *context) {
+        waHomeViewController *controller = weakSelf;
+        if (controller && (item.type == waMediaItemTypeSong || item.type == waMediaItemTypeAlbum || item.type == waMediaItemTypeArtist || item.type == waMediaItemTypePlaylist)) [waMediaActionSheet presentForItem:item inViewController:controller albumItems:context];
+    };
+    view.moreAction = nil;
+    if ([section[@"showsMore"] boolValue]) {
+        view.moreAction = ^{
+            waHomeViewController *controller = weakSelf;
+            NSArray *items = controller ? [controller mediaItemsFromSection:section] : @[];
+            if (!controller || !items.count) return;
+            waMediaItem *first = items[0];
+            [controller.navigationController pushViewController:[[waMediaResultsViewController alloc] initWithItems:items type:first.type title:section[@"title"] ?: @"More"] animated:YES];
+        };
+    }
+}
+
 - (void)renderSections {
     if (![NSThread isMainThread]) {
         __weak waHomeViewController *weakSelf = self;
@@ -116,25 +268,21 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     }
     self.renderingSections = YES;
     @try {
-    for (waHomeSectionView *view in self.sectionViews) { [view clearCallbacks]; [view removeFromSuperview]; }
-    [self.sectionViews removeAllObjects];
-    __weak waHomeViewController *weakSelf = self;
-    CGFloat y = 30.0 + [waTheme statusBarHeight];
+    BOOL reuseViews = self.sectionViews.count == self.sections.count;
+    if (!reuseViews) {
+        for (waHomeSectionView *view in self.sectionViews) { [view clearCallbacks]; [view removeFromSuperview]; }
+        [self.sectionViews removeAllObjects];
+    }
+    CGFloat y = waHomeSectionOriginY();
     CGFloat width = self.view.bounds.size.width;
-    for (NSDictionary *section in self.sections) {
-        waHomeSectionView *view = [[waHomeSectionView alloc] initWithFrame:CGRectMake(0.0, y, width, 270.0)];
-        NSMutableDictionary *displaySection = [section mutableCopy];
-        displaySection[@"items"] = [self mediaItemsFromSection:section];
-         [view configureWithSection:displaySection selection:^(waMediaItem *item, NSArray *context) {
-             waHomeViewController *controller = weakSelf;
-             if (controller) [controller selectHomeItem:item context:context];
-         }];
-         view.longPress = ^(waMediaItem *item, NSArray *context) {
-             waHomeViewController *controller = weakSelf;
-             if (controller && (item.type == waMediaItemTypeSong || item.type == waMediaItemTypeAlbum || item.type == waMediaItemTypeArtist || item.type == waMediaItemTypePlaylist)) [waMediaActionSheet presentForItem:item inViewController:controller albumItems:context];
-         };
-        [self.scrollView addSubview:view];
-        [self.sectionViews addObject:view];
+    for (NSUInteger index = 0; index < self.sections.count; index++) {
+        NSDictionary *section = self.sections[index];
+        waHomeSectionView *view = reuseViews ? self.sectionViews[index] : [[waHomeSectionView alloc] initWithFrame:CGRectMake(0.0, y, width, 270.0)];
+        [self configureSectionView:view withSection:section];
+        if (!reuseViews) {
+            [self.scrollView addSubview:view];
+            [self.sectionViews addObject:view];
+        }
         y += [view preferredHeight] + 18.0;
     }
     [self layoutSectionViews];
@@ -146,7 +294,7 @@ static dispatch_queue_t waHomeCacheQueue(void) {
 }
 
 - (void)layoutSectionViews {
-    CGFloat y = 30.0 + [waTheme statusBarHeight];
+    CGFloat y = waHomeSectionOriginY();
     CGFloat width = self.view.bounds.size.width;
     for (waHomeSectionView *view in self.sectionViews) {
         view.frame = CGRectMake(0.0, y, width, [view preferredHeight]);
@@ -161,10 +309,10 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     self.loadingHome = YES;
     [self.emptyView setLoading:YES];
     self.emptyView.hidden = NO;
-    [self.refreshControl endRefreshing];
     [[waAPIClient sharedClient] homeWithCompletion:^(NSDictionary *home, NSError *error) {
         if (generation != self.loadGeneration) return;
         if (!error && home) {
+            [self.refreshControl endRefreshing];
             [self applyHomeSource:home failedWithError:NO];
             dispatch_async(waHomeCacheQueue(), ^{
                 // One-time purge of the legacy NSUserDefaults copy: it was
@@ -181,6 +329,7 @@ static dispatch_queue_t waHomeCacheQueue(void) {
             NSDictionary *cached = [NSDictionary dictionaryWithContentsOfFile:waHomeCachePath()];
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (generation != self.loadGeneration) return;
+                [self.refreshControl endRefreshing];
                 [self applyHomeSource:cached failedWithError:YES];
             });
         });
@@ -195,8 +344,55 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     for (NSDictionary *section in sections) {
         if (![section isKindOfClass:[NSDictionary class]]) continue;
         NSArray *items = [section[@"items"] isKindOfClass:[NSArray class]] ? section[@"items"] : nil;
-        if (items.count) [usable addObject:section];
+        if (!items.count) continue;
+        NSString *sectionTitle = [section[@"title"] isKindOfClass:[NSString class]] ? section[@"title"] : @"";
+        NSString *sectionTitleKey = [sectionTitle lowercaseString];
+        if ([sectionTitleKey rangeOfString:@"your top genres"].location != NSNotFound) continue;
+        BOOL isFlowSection = [sectionTitleKey rangeOfString:@"flow"].location != NSNotFound;
+        if (!isFlowSection) {
+            [usable addObject:section];
+            continue;
+        }
+
+        // Deezer's Home flow shelf contains moods and genre flows in the same
+        // module. Keep them as separate shelves so a genre card is never
+        // treated as a normal playlist by the UI.
+        NSMutableArray *moods = [NSMutableArray array];
+        NSMutableArray *genres = [NSMutableArray array];
+        for (NSDictionary *item in items) {
+            NSString *homeKindValue = [item[@"homeKind"] isKindOfClass:[NSString class]] ? item[@"homeKind"] : @"";
+            NSString *homeKind = [homeKindValue lowercaseString];
+            if ([homeKind isEqualToString:@"genre"] || [homeKind hasPrefix:@"genre-"]) [genres addObject:item];
+            else [moods addObject:item];
+        }
+        if (moods.count) {
+            NSMutableDictionary *moodSection = [section mutableCopy];
+            moodSection[@"title"] = @"Your Flow";
+            moodSection[@"subtitle"] = @"Play by mood";
+            moodSection[@"layout"] = @"circle";
+            moodSection[@"items"] = moods;
+            [usable addObject:moodSection];
+        }
+        if (genres.count) {
+            NSMutableDictionary *genreSection = [section mutableCopy];
+            genreSection[@"title"] = @"Top genres";
+            genreSection[@"subtitle"] = @"Based on your listening";
+            genreSection[@"layout"] = @"circle";
+            genreSection[@"items"] = genres;
+            [usable addObject:genreSection];
+        }
     }
+    [usable sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        NSString *leftTitle = [left[@"title"] isKindOfClass:[NSString class]] ? [left[@"title"] lowercaseString] : @"";
+        NSString *rightTitle = [right[@"title"] isKindOfClass:[NSString class]] ? [right[@"title"] lowercaseString] : @"";
+        BOOL leftFlow = [leftTitle rangeOfString:@"flow"].location != NSNotFound;
+        BOOL rightFlow = [rightTitle rangeOfString:@"flow"].location != NSNotFound;
+        if (leftFlow != rightFlow) return leftFlow ? NSOrderedAscending : NSOrderedDescending;
+        BOOL leftRecent = [leftTitle rangeOfString:@"recent"].location != NSNotFound;
+        BOOL rightRecent = [rightTitle rangeOfString:@"recent"].location != NSNotFound;
+        if (leftRecent != rightRecent) return leftRecent ? NSOrderedAscending : NSOrderedDescending;
+        return NSOrderedSame;
+    }];
     self.sections = usable;
     self.loadingHome = NO;
     [self.emptyView setLoading:NO];
@@ -209,36 +405,96 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     }
     [[waAPIClient sharedClient] flowConfigsWithCompletion:^(NSArray *configs, NSError *flowError) {
         if (flowError || !configs.count) return;
+        NSMutableArray *moodConfigs = [NSMutableArray array];
+        NSMutableArray *genreConfigs = [NSMutableArray array];
+        for (NSDictionary *config in configs) {
+            if (![config isKindOfClass:[NSDictionary class]]) continue;
+            NSString *kindValue = [config[@"homeKind"] isKindOfClass:[NSString class]] ? config[@"homeKind"] : @"";
+            NSString *kind = [kindValue lowercaseString];
+            if ([kind isEqualToString:@"genre"] || [kind hasPrefix:@"genre-"]) [genreConfigs addObject:config];
+            else [moodConfigs addObject:config];
+        }
         NSMutableArray *updated = [self.sections mutableCopy];
         NSInteger flowSectionIndex = NSNotFound;
+        NSInteger genreSectionIndex = NSNotFound;
         for (NSUInteger index = 0; index < updated.count; index++) {
-             NSDictionary *section = updated[index];
-             if ([[section[@"title"] lowercaseString] rangeOfString:@"flow"].location != NSNotFound) { flowSectionIndex = (NSInteger)index; break; }
-         }
-        if (flowSectionIndex != NSNotFound) {
-             NSMutableDictionary *section = [updated[flowSectionIndex] mutableCopy];
-             section[@"subtitle"] = @"";
-              NSMutableArray *items = [section[@"items"] mutableCopy] ?: [NSMutableArray array];
-              NSIndexSet *defaultFlowIndexes = [items indexesOfObjectsPassingTest:^BOOL(NSDictionary *object, NSUInteger idx, BOOL *stop) {
-                  NSString *identifier = object[@"identifier"];
-                  NSString *title = [object[@"title"] lowercaseString];
-                  return [identifier isEqualToString:@"default"] || [title isEqualToString:@"flow"];
-              }];
-              if (defaultFlowIndexes.count) [items removeObjectsAtIndexes:defaultFlowIndexes];
-             for (NSDictionary *config in configs) {
-                 NSString *identifier = config[@"identifier"];
-                 NSInteger existingIndex = NSNotFound;
-                 for (NSUInteger itemIndex = 0; itemIndex < items.count; itemIndex++) {
-                     if ([items[itemIndex][@"identifier"] isEqualToString:identifier]) { existingIndex = (NSInteger)itemIndex; break; }
-                 }
-                 if (existingIndex != NSNotFound) [items replaceObjectAtIndex:existingIndex withObject:config];
-                 else [items addObject:config];
-             }
-             section[@"items"] = items;
-             updated[flowSectionIndex] = section;
-         } else {
-             [updated addObject:@{@"title": @"Flow: play how you feel", @"subtitle": @"Choose your mood", @"layout": @"circle", @"items": configs}];
-         }
+            NSDictionary *section = updated[index];
+            NSString *titleValue = [section[@"title"] isKindOfClass:[NSString class]] ? section[@"title"] : @"";
+            NSString *title = [titleValue lowercaseString];
+            if (flowSectionIndex == NSNotFound && [title rangeOfString:@"flow"].location != NSNotFound) flowSectionIndex = (NSInteger)index;
+            if (genreSectionIndex == NSNotFound && [title rangeOfString:@"genre"].location != NSNotFound) genreSectionIndex = (NSInteger)index;
+        }
+
+        void (^mergeConfigs)(NSMutableArray *, NSArray *) = ^(NSMutableArray *items, NSArray *newConfigs) {
+            for (NSDictionary *config in newConfigs) {
+                NSString *identifier = config[@"identifier"];
+                if (!identifier.length) continue;
+                NSInteger existingIndex = NSNotFound;
+                for (NSUInteger itemIndex = 0; itemIndex < items.count; itemIndex++) {
+                    if ([items[itemIndex][@"identifier"] isEqualToString:identifier]) { existingIndex = (NSInteger)itemIndex; break; }
+                }
+                if (existingIndex != NSNotFound) [items replaceObjectAtIndex:existingIndex withObject:config];
+                else [items addObject:config];
+            }
+        };
+
+        if (moodConfigs.count) {
+            if (flowSectionIndex == NSNotFound) {
+                [updated insertObject:@{@"title": @"Your Flow", @"subtitle": @"Play by mood", @"layout": @"circle", @"items": moodConfigs} atIndex:0];
+                if (genreSectionIndex != NSNotFound) genreSectionIndex += 1;
+                flowSectionIndex = 0;
+            } else {
+                NSMutableDictionary *section = [updated[flowSectionIndex] mutableCopy];
+                NSMutableArray *items = [NSMutableArray array];
+                for (NSDictionary *item in section[@"items"]) {
+                    NSString *kindValue = [item[@"homeKind"] isKindOfClass:[NSString class]] ? item[@"homeKind"] : @"";
+                    NSString *kind = [kindValue lowercaseString];
+                    NSString *identifier = item[@"identifier"];
+                    if ([kind isEqualToString:@"genre"] || [kind hasPrefix:@"genre-"] || [identifier hasPrefix:@"genre-"]) continue;
+                    if ([identifier isEqualToString:@"default"] || [[item[@"title"] lowercaseString] isEqualToString:@"flow"]) continue;
+                    [items addObject:item];
+                }
+                section[@"title"] = @"Your Flow";
+                section[@"subtitle"] = @"Play by mood";
+                section[@"layout"] = @"circle";
+                mergeConfigs(items, moodConfigs);
+                section[@"items"] = items;
+                updated[flowSectionIndex] = section;
+            }
+        }
+
+        if (genreConfigs.count) {
+            if (genreSectionIndex == NSNotFound) {
+                NSUInteger insertIndex = flowSectionIndex == NSNotFound ? 0 : (NSUInteger)flowSectionIndex + 1;
+                [updated insertObject:@{@"title": @"Top genres", @"subtitle": @"Based on your listening", @"layout": @"circle", @"items": genreConfigs} atIndex:MIN(insertIndex, updated.count)];
+            } else {
+                NSMutableDictionary *section = [updated[genreSectionIndex] mutableCopy];
+                NSMutableArray *items = [NSMutableArray array];
+                for (NSDictionary *item in section[@"items"]) {
+                    NSString *kindValue = [item[@"homeKind"] isKindOfClass:[NSString class]] ? item[@"homeKind"] : @"";
+                    NSString *kind = [kindValue lowercaseString];
+                    NSString *identifier = item[@"identifier"];
+                    if ([kind isEqualToString:@"genre"] || [kind hasPrefix:@"genre-"] || [identifier hasPrefix:@"genre-"]) [items addObject:item];
+                }
+                section[@"title"] = @"Top genres";
+                section[@"subtitle"] = @"Based on your listening";
+                section[@"layout"] = @"circle";
+                mergeConfigs(items, genreConfigs);
+                section[@"items"] = items;
+                updated[genreSectionIndex] = section;
+            }
+        }
+        [updated sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+            NSString *leftTitle = [left[@"title"] isKindOfClass:[NSString class]] ? [left[@"title"] lowercaseString] : @"";
+            NSString *rightTitle = [right[@"title"] isKindOfClass:[NSString class]] ? [right[@"title"] lowercaseString] : @"";
+            BOOL leftFlow = [leftTitle rangeOfString:@"flow"].location != NSNotFound;
+            BOOL rightFlow = [rightTitle rangeOfString:@"flow"].location != NSNotFound;
+            if (leftFlow != rightFlow) return leftFlow ? NSOrderedAscending : NSOrderedDescending;
+            BOOL leftRecent = [leftTitle rangeOfString:@"recent"].location != NSNotFound;
+            BOOL rightRecent = [rightTitle rangeOfString:@"recent"].location != NSNotFound;
+            if (leftRecent != rightRecent) return leftRecent ? NSOrderedAscending : NSOrderedDescending;
+            return NSOrderedSame;
+        }];
         self.sections = updated;
         [self renderSections];
     }];
@@ -248,7 +504,8 @@ static dispatch_queue_t waHomeCacheQueue(void) {
 - (void)selectHomeItem:(waMediaItem *)item context:(NSArray *)context {
     if (!item) return;
     NSString *homeKind = [item.metadata[@"homeKind"] lowercaseString];
-    BOOL flowKind = [@[@"flow", @"flow_mood", @"mood", @"radio", @"channel"] containsObject:homeKind];
+    BOOL flowKind = [@[@"flow", @"flow_mood", @"mood", @"radio", @"channel", @"genre"] containsObject:homeKind];
+    BOOL smartTracklistKind = [homeKind isEqualToString:@"smarttracklist"];
     if (flowKind) {
         [self.emptyView setLoading:YES];
         self.emptyView.hidden = NO;
@@ -261,9 +518,12 @@ static dispatch_queue_t waHomeCacheQueue(void) {
                 if (mediaItem) [mediaTracks addObject:mediaItem];
             }
             if (error || !mediaTracks.count) {
-                [[[UIAlertView alloc] initWithTitle:@"Flow" message:error.localizedDescription ?: @"No Flow tracks available." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+                self.emptyView.hidden = YES;
+                NSString *title = [homeKind isEqualToString:@"genre"] ? @"Top genre" : @"Flow";
+                [[[UIAlertView alloc] initWithTitle:title message:error.localizedDescription ?: @"No tracks available." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
                 return;
             }
+            self.emptyView.hidden = YES;
             [[waAudioPlayer sharedPlayer] playItem:mediaTracks[0] fromContext:mediaTracks title:item.title.length ? item.title : @"Flow"];
         };
         if (flowConfigID.length && ![flowConfigID isEqualToString:@"default"]) {
@@ -273,11 +533,28 @@ static dispatch_queue_t waHomeCacheQueue(void) {
         }
         return;
     }
+    if (smartTracklistKind) {
+        if (!item.identifier.length) return;
+        [self.emptyView setLoading:YES];
+        self.emptyView.hidden = NO;
+        [[waAPIClient sharedClient] smartTracklistWithIdentifier:item.identifier completion:^(NSDictionary *playlist, NSError *error) {
+            [self.emptyView setLoading:NO];
+            self.emptyView.hidden = YES;
+            if (error || ![playlist isKindOfClass:[NSDictionary class]]) {
+                [[[UIAlertView alloc] initWithTitle:@"Made for you" message:error.localizedDescription ?: @"Unable to load this playlist." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+                return;
+            }
+            [self.navigationController pushViewController:[[waPlaylistViewController alloc] initWithPlaylist:playlist ownerIsCurrentUser:NO] animated:YES];
+        }];
+        return;
+    }
     if (item.type == waMediaItemTypeSong) {
         [[waAudioPlayer sharedPlayer] playItem:item fromContext:context title:item.title ?: @"Deezer"];
     } else if (item.type == waMediaItemTypePlaylist) {
         if (!item.identifier.length) return;
-        NSDictionary *playlist = @{ @"id": item.identifier ?: @"", @"title": item.title ?: @"Playlist", @"name": item.title ?: @"Playlist", @"description": @"", @"thumbnailURL": item.thumbnailURL ?: @"", @"artwork": item.thumbnailURL ?: @"" };
+        NSMutableDictionary *playlist = [@{ @"id": item.identifier ?: @"", @"identifier": item.identifier ?: @"", @"title": item.title ?: @"Playlist", @"name": item.title ?: @"Playlist", @"description": @"", @"thumbnailURL": item.thumbnailURL ?: @"", @"artwork": item.thumbnailURL ?: @"" } mutableCopy];
+        if (homeKind.length) playlist[@"homeKind"] = homeKind;
+        if (item.metadata[@"smartTracklistID"]) playlist[@"smartTracklistID"] = item.metadata[@"smartTracklistID"];
         [self.navigationController pushViewController:[[waPlaylistViewController alloc] initWithPlaylist:playlist ownerIsCurrentUser:NO] animated:YES];
     } else {
         [self.navigationController pushViewController:[[waMediaDetailViewController alloc] initWithMediaItem:item] animated:YES];
@@ -289,12 +566,27 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     self.scrollView.backgroundColor = [waTheme backgroundColor];
     [self.emptyView applyTheme];
     self.refreshControl.tintColor = [waTheme barColor];
+    self.greetingLabel.textColor = [waTheme secondaryTextColor];
+    self.headerTitleLabel.textColor = [waTheme primaryTextColor];
+    self.headerSubtitleLabel.textColor = [waTheme secondaryTextColor];
+    [waTheme applySkeuomorphicStyleToButton:self.headerActionButton];
+    [self updateHomeHeader];
 }
 
 - (void)themeDidChange:(NSNotification *)notification {
     (void)notification;
     [self applyTheme];
     if (self.view.window) [self renderSections];
+}
+
+- (void)playerDidChange:(NSNotification *)notification {
+    (void)notification;
+    if (![NSThread isMainThread]) {
+        __weak waHomeViewController *weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf playerDidChange:nil]; });
+        return;
+    }
+    [self updateHomeHeader];
 }
 
 // Home cards carry no download state, so download notifications require no
@@ -316,6 +608,13 @@ static dispatch_queue_t waHomeCacheQueue(void) {
     } else {
         self.scrollView.frame = bounds;
     }
+    self.homeHeaderView.frame = CGRectMake(16.0, 12.0, MAX(0.0, self.scrollView.bounds.size.width - 32.0), waHomeHeaderHeight());
+    CGFloat actionWidth = 106.0;
+    CGFloat textWidth = MAX(0.0, self.homeHeaderView.bounds.size.width - actionWidth - 12.0);
+    self.greetingLabel.frame = CGRectMake(0.0, 0.0, textWidth, 20.0);
+    self.headerTitleLabel.frame = CGRectMake(0.0, 18.0, textWidth, 30.0);
+    self.headerSubtitleLabel.frame = CGRectMake(0.0, 51.0, textWidth, 20.0);
+    self.headerActionButton.frame = CGRectMake(self.homeHeaderView.bounds.size.width - actionWidth, 23.0, actionWidth, 36.0);
     self.emptyView.frame = self.view.bounds;
     if (!self.loadingHome) [self layoutSectionViews];
 }

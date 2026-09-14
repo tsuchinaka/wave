@@ -4,6 +4,7 @@
 #import "../Services/waAudioPlayer.h"
 #import "../Services/waImageLoader.h"
 #import "../Services/waDebugLog.h"
+#import "../Services/waDownloadManager.h"
 #import "../Views/waHomeSectionView.h"
 #import "../Views/waArtworkCell.h"
 #import "../Views/waEmptyView.h"
@@ -54,6 +55,10 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 @property (nonatomic, strong) NSArray *renderedAlbums;
 @property (nonatomic, strong) NSArray *renderedArtists;
 @property (nonatomic, strong) NSArray *renderedPlaylists;
+@property (nonatomic, strong) UIView *downloadTitleView;
+@property (nonatomic, strong) UILabel *downloadTitleLabel;
+@property (nonatomic, strong) UIProgressView *downloadProgressView;
+@property (nonatomic, strong) NSTimer *downloadProgressRefreshTimer;
 @end
 
 @implementation waLibraryViewController
@@ -75,6 +80,7 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
     [super viewDidLoad];
     self.title = @"Library";
     self.view.backgroundColor = [waTheme backgroundColor];
+    [self setupDownloadTitleView];
 
     self.scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
     self.scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -137,12 +143,15 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 
     [self applyTheme];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(themeDidChange:) name:waThemeDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(downloadsChanged:) name:waDownloadManagerDidChangeNotification object:nil];
+    [self updateDownloadTitleView];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self.navigationController setNavigationBarHidden:NO animated:animated];
     [self applyTheme];
+    [self updateDownloadTitleView];
     if (![[waAPIClient sharedClient] isAuthenticated]) {
         [self showAuthRequired];
         return;
@@ -152,6 +161,71 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
     } else {
         [self updateContent];
     }
+}
+
+#pragma mark - Download progress
+
+- (void)setupDownloadTitleView {
+    self.downloadTitleView = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 158.0, 44.0)];
+    self.downloadTitleView.backgroundColor = [UIColor clearColor];
+
+    self.downloadTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.downloadTitleLabel.text = @"Library";
+    self.downloadTitleLabel.textAlignment = NSTextAlignmentCenter;
+    self.downloadTitleLabel.numberOfLines = 1;
+    self.downloadTitleLabel.adjustsFontSizeToFitWidth = YES;
+    self.downloadTitleLabel.textColor = [UIColor whiteColor];
+    self.downloadTitleLabel.backgroundColor = [UIColor clearColor];
+    self.downloadTitleLabel.font = [waTheme boldFontOfSize:16.0];
+    [self.downloadTitleView addSubview:self.downloadTitleLabel];
+
+    self.downloadProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
+    self.downloadProgressView.progressTintColor = [UIColor whiteColor];
+    self.downloadProgressView.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.28];
+    self.downloadProgressView.hidden = YES;
+    [self.downloadTitleView addSubview:self.downloadProgressView];
+
+    // UIProgressViewStyleBar is supported by iOS 6 and is intended for a
+    // navigation item's titleView, keeping the progress inside the bar.
+    self.navigationItem.titleView = self.downloadTitleView;
+}
+
+- (void)updateDownloadTitleView {
+    if (!self.downloadTitleView) return;
+    waDownloadManager *manager = [waDownloadManager sharedManager];
+    NSUInteger count = [manager activeDownloadCount];
+    BOOL downloading = count > 0;
+    self.downloadProgressView.hidden = !downloading;
+    if (downloading) {
+        NSString *groupTitle = [manager activeDownloadGroupTitle];
+        self.downloadTitleLabel.text = groupTitle.length ? groupTitle : @"Library";
+        self.downloadTitleLabel.frame = CGRectMake(0.0, 1.0, 158.0, 20.0);
+        self.downloadProgressView.frame = CGRectMake(10.0, 24.0, 138.0, 9.0);
+        [self.downloadProgressView setProgress:[manager overallDownloadProgress] animated:NO];
+    } else {
+        self.downloadTitleLabel.text = @"Library";
+        self.downloadTitleLabel.frame = CGRectMake(0.0, 10.0, 158.0, 24.0);
+        self.downloadProgressView.frame = CGRectZero;
+    }
+}
+
+- (void)downloadsChanged:(NSNotification *)notification {
+    if ([notification.userInfo[@"event"] isEqualToString:@"progress"]) {
+        // The manager already throttles progress events. Coalesce them once
+        // more here so Library only updates its title view at 5 Hz even when
+        // several connections are active.
+        if (!self.downloadProgressRefreshTimer) {
+            self.downloadProgressRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 target:self selector:@selector(downloadProgressRefreshTimerFired:) userInfo:nil repeats:NO];
+        }
+        return;
+    }
+    [self updateDownloadTitleView];
+}
+
+- (void)downloadProgressRefreshTimerFired:(NSTimer *)timer {
+    if (timer != self.downloadProgressRefreshTimer) return;
+    self.downloadProgressRefreshTimer = nil;
+    [self updateDownloadTitleView];
 }
 
 #pragma mark - Shortcuts
@@ -667,6 +741,10 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
         self.searchBar.barTintColor = [waTheme backgroundColor];
     }
     self.searchBar.tintColor = [waTheme barColor];
+    self.downloadTitleLabel.font = [waTheme boldFontOfSize:16.0];
+    self.downloadTitleLabel.textColor = [UIColor whiteColor];
+    self.downloadProgressView.progressTintColor = [UIColor whiteColor];
+    self.downloadProgressView.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.28];
     [self.segmentedControl updateAppearance];
     for (UIButton *button in self.shortcutButtons) button.backgroundColor = [waTheme barColor];
     [self.emptyView applyTheme];
@@ -711,6 +789,7 @@ static const NSInteger waCreatePlaylistAlertTag = 101;
 
 - (void)dealloc {
     [self.filterDebounceTimer invalidate];
+    [self.downloadProgressRefreshTimer invalidate];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     for (waHomeSectionView *shelf in self.shelves) [shelf clearCallbacks];
 }

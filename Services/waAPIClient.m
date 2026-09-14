@@ -215,6 +215,9 @@ typedef id (^waAPIResponseProcessor)(NSData *data, NSHTTPURLResponse *response, 
 - (void)flowConfigsWithCompletion:(void (^)(NSArray *, NSError *))completion {
     [[waDeezerClient sharedClient] flowConfigsWithCompletion:completion];
 }
+- (void)smartTracklistWithIdentifier:(NSString *)identifier completion:(void (^)(NSDictionary *, NSError *))completion {
+    [[waDeezerClient sharedClient] smartTracklistWithIdentifier:identifier completion:completion];
+}
 - (void)pingWithLatencyCompletion:(void (^)(NSTimeInterval, NSError *))completion {
     // Serverless: ping Deezer directly instead of bytebox
     CFTimeInterval started = CFAbsoluteTimeGetCurrent();
@@ -311,6 +314,9 @@ typedef id (^waAPIResponseProcessor)(NSData *data, NSHTTPURLResponse *response, 
 }
 - (void)searchQuery:(NSString *)query type:(NSString *)type limit:(NSUInteger)limit index:(NSUInteger)index strict:(BOOL)strict completion:(void (^)(NSArray *, NSError *))completion {
     [[waDeezerClient sharedClient] searchQuery:query type:type limit:limit index:index strict:strict completion:completion];
+}
+- (void)searchPageForQuery:(NSString *)query type:(NSString *)type limit:(NSUInteger)limit index:(NSUInteger)index strict:(BOOL)strict completion:(void (^)(NSDictionary *, NSError *))completion {
+    [[waDeezerClient sharedClient] searchPageForQuery:query type:type limit:limit index:index strict:strict completion:completion];
 }
 - (void)cancelSearchRequests {
     [[waDeezerClient sharedClient] cancelSearchRequests];

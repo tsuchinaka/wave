@@ -32,14 +32,14 @@
         self.titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         self.titleLabel.backgroundColor = [UIColor clearColor];
         self.titleLabel.textColor = [UIColor whiteColor];
-        self.titleLabel.font = [waTheme mediumFontOfSize:15.5];
+        self.titleLabel.font = [waTheme mediumFontOfSize:15.0];
         self.titleLabel.numberOfLines = 2;
         self.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
         [self.contentView addSubview:self.titleLabel];
         self.subtitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         self.subtitleLabel.backgroundColor = [UIColor clearColor];
         self.subtitleLabel.textColor = [waTheme secondaryTextColor];
-        self.subtitleLabel.font = [waTheme secondaryRegularFontOfSize:13.0];
+        self.subtitleLabel.font = [waTheme secondaryRegularFontOfSize:12.0];
         self.subtitleLabel.numberOfLines = 3;
         self.subtitleLabel.lineBreakMode = NSLineBreakByWordWrapping;
         [self.contentView addSubview:self.subtitleLabel];
@@ -72,9 +72,9 @@
     self.expectedArtworkURL = [item.thumbnailURL copy];
     if (self.expectedArtworkURL.length) {
         __weak waHomeCardCell *weakCell = self;
-        // Home cards are 160pt wide. The generic thumbnail method defaults to
-        // 44pt for list rows, so explicitly request a 320px source here.
-        [[waImageLoader sharedLoader] loadThumbnailAtURL:self.expectedArtworkURL targetSize:CGSizeMake(320.0, 320.0) placeholder:waPlaceholderImage() completion:^(UIImage *image) {
+        // Home cards are 142pt wide on iPhone. Request a 160pt target so
+        // Retina devices receive a 320px decode instead of a 640px bitmap.
+        [[waImageLoader sharedLoader] loadThumbnailAtURL:self.expectedArtworkURL targetSize:CGSizeMake(160.0, 160.0) placeholder:waPlaceholderImage() completion:^(UIImage *image) {
             waHomeCardCell *cell = weakCell;
             if (cell && cell.item == item && [cell.expectedArtworkURL isEqualToString:item.thumbnailURL] && image) cell.artworkView.image = image;
         }];

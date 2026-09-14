@@ -209,6 +209,24 @@ static UIImage *waButtonImage(UIColor *baseColor, BOOL highlighted, BOOL selecte
     }];
 }
 
+static UIImage *waFlatButtonImage(UIColor *baseColor, BOOL highlighted, BOOL selected, BOOL disabled) {
+    NSString *key = [NSString stringWithFormat:@"theme-flat-button:%@:%d:%d:%d", [waTheme renderCacheKeyForColor:baseColor], highlighted, selected, disabled];
+    return [waTheme cachedImageForKey:key renderer:^UIImage *{
+        CGSize size = CGSizeMake(48.0, 44.0);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+        CGRect bounds = CGRectInset((CGRect){CGPointZero, size}, 1.0, 1.0);
+        UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:6.0];
+        UIColor *fill = disabled ? [UIColor colorWithWhite:1.0 alpha:0.08] : baseColor;
+        if (highlighted && !disabled) fill = waThemeAdjustedColor(fill, 0.82, 1.0);
+        else if (selected && !disabled) fill = waThemeAdjustedColor(fill, 0.92, 1.0);
+        [fill setFill];
+        [path fill];
+        UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return [image resizableImageWithCapInsets:UIEdgeInsetsMake(8.0, 8.0, 8.0, 8.0)];
+    }];
+}
+
 static UIImage *waSegmentImage(UIColor *base, BOOL selected, BOOL highlighted) {
     NSString *key = [NSString stringWithFormat:@"theme-segment:%@:%d:%d", [waTheme renderCacheKeyForColor:base], selected, highlighted];
     return [waTheme cachedImageForKey:key renderer:^UIImage *{
@@ -231,6 +249,21 @@ static UIImage *waSegmentImage(UIColor *base, BOOL selected, BOOL highlighted) {
         UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
         return [image resizableImageWithCapInsets:UIEdgeInsetsMake(7.0, 7.0, 7.0, 7.0)];
+    }];
+}
+
+static UIImage *waFlatSegmentImage(UIColor *base, BOOL selected, BOOL highlighted) {
+    NSString *key = [NSString stringWithFormat:@"theme-flat-segment:%@:%d:%d", [waTheme renderCacheKeyForColor:base], selected, highlighted];
+    return [waTheme cachedImageForKey:key renderer:^UIImage *{
+        CGSize size = CGSizeMake(80.0, 34.0);
+        UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+        UIColor *fill = selected ? base : [UIColor colorWithWhite:1.0 alpha:0.08];
+        if (highlighted) fill = selected ? waThemeAdjustedColor(fill, 0.82, 1.0) : [UIColor colorWithWhite:1.0 alpha:0.14];
+        [fill setFill];
+        UIRectFill((CGRect){CGPointZero, size});
+        UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        return [image resizableImageWithCapInsets:UIEdgeInsetsMake(0.0, 8.0, 0.0, 8.0)];
     }];
 }
 
@@ -274,13 +307,14 @@ static UIImage *waTabBarShadowImage(void) {
 }
 
 + (void)applySkeuomorphicStyleToSegmentedControl:(UISegmentedControl *)control {
-    UIImage *normal = waSegmentImage([self barColor], NO, NO);
-    UIImage *selected = waSegmentImage([self barColor], YES, NO);
-    UIImage *highlighted = waSegmentImage([self barColor], NO, YES);
+    BOOL modern = [self isModernSystem];
+    UIImage *normal = modern ? waFlatSegmentImage([self barColor], NO, NO) : waSegmentImage([self barColor], NO, NO);
+    UIImage *selected = modern ? waFlatSegmentImage([self barColor], YES, NO) : waSegmentImage([self barColor], YES, NO);
+    UIImage *highlighted = modern ? waFlatSegmentImage([self barColor], NO, YES) : waSegmentImage([self barColor], NO, YES);
     [control setBackgroundImage:normal forState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
     [control setBackgroundImage:selected forState:UIControlStateSelected barMetrics:UIBarMetricsDefault];
     [control setBackgroundImage:highlighted forState:UIControlStateHighlighted barMetrics:UIBarMetricsDefault];
-    [control setBackgroundImage:waSegmentImage([self barColor], YES, YES) forState:UIControlStateSelected | UIControlStateHighlighted barMetrics:UIBarMetricsDefault];
+    [control setBackgroundImage:(modern ? waFlatSegmentImage([self barColor], YES, YES) : waSegmentImage([self barColor], YES, YES)) forState:UIControlStateSelected | UIControlStateHighlighted barMetrics:UIBarMetricsDefault];
     UIImage *divider = waSegmentDividerImage();
     [control setDividerImage:divider forLeftSegmentState:UIControlStateNormal rightSegmentState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
     [control setDividerImage:divider forLeftSegmentState:UIControlStateSelected rightSegmentState:UIControlStateNormal barMetrics:UIBarMetricsDefault];
@@ -451,19 +485,24 @@ static NSString *waThemeNormalizedNameCache;
     if (!button) return;
     button.backgroundColor = [UIColor clearColor];
     button.layer.cornerRadius = [self cornerRadius];
-    // The image already contains the rounded clipping. Keep the layer open so
-    // callers can add the small external shadow used by the iOS 6 controls.
-    button.layer.masksToBounds = NO;
+    BOOL modern = [self isModernSystem];
+    // The legacy renderer keeps the iOS 6 gloss. iOS 7 uses a solid surface
+    // with state color changes and no bevel, border, or text embossing.
+    button.layer.masksToBounds = modern;
+    button.layer.borderWidth = 0.0;
+    button.layer.shadowOpacity = 0.0;
     [button setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.72] forState:UIControlStateHighlighted];
     [button setTitleColor:[UIColor whiteColor] forState:UIControlStateSelected];
     [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.82] forState:UIControlStateSelected | UIControlStateHighlighted];
     [button setTitleColor:[UIColor colorWithWhite:1.0 alpha:0.48] forState:UIControlStateDisabled];
-    [button setBackgroundImage:waButtonImage([self barColor], NO, NO, NO) forState:UIControlStateNormal];
-    [button setBackgroundImage:waButtonImage([self barColor], YES, NO, NO) forState:UIControlStateHighlighted];
-    [button setBackgroundImage:waButtonImage([self barColor], NO, YES, NO) forState:UIControlStateSelected];
-    [button setBackgroundImage:waButtonImage([self barColor], YES, YES, NO) forState:UIControlStateSelected | UIControlStateHighlighted];
-    [button setBackgroundImage:waButtonImage([self barColor], NO, NO, YES) forState:UIControlStateDisabled];
+    [button setBackgroundImage:(modern ? waFlatButtonImage([self barColor], NO, NO, NO) : waButtonImage([self barColor], NO, NO, NO)) forState:UIControlStateNormal];
+    [button setBackgroundImage:(modern ? waFlatButtonImage([self barColor], YES, NO, NO) : waButtonImage([self barColor], YES, NO, NO)) forState:UIControlStateHighlighted];
+    [button setBackgroundImage:(modern ? waFlatButtonImage([self barColor], NO, YES, NO) : waButtonImage([self barColor], NO, YES, NO)) forState:UIControlStateSelected];
+    [button setBackgroundImage:(modern ? waFlatButtonImage([self barColor], YES, YES, NO) : waButtonImage([self barColor], YES, YES, NO)) forState:UIControlStateSelected | UIControlStateHighlighted];
+    [button setBackgroundImage:(modern ? waFlatButtonImage([self barColor], NO, NO, YES) : waButtonImage([self barColor], NO, NO, YES)) forState:UIControlStateDisabled];
+    button.titleLabel.shadowColor = modern ? nil : [UIColor colorWithWhite:0.0 alpha:0.45];
+    button.titleLabel.shadowOffset = modern ? CGSizeZero : CGSizeMake(0.0, 1.0);
     objc_setAssociatedObject(button, waThemeButtonKey, [self normalizedThemeName], OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
 
@@ -494,10 +533,11 @@ static NSString *waThemeNormalizedNameCache;
         }
     } else if ([view isKindOfClass:[UITabBar class]]) {
         UITabBar *tabBar = (UITabBar *)view;
-        tabBar.backgroundImage = waTabBarBackgroundImage([self backgroundColor]);
-        tabBar.shadowImage = waTabBarShadowImage();
         if ([self isModernSystem]) {
-            // Use the same opaque custom surface on iOS 6 and iOS 7+.
+            // iOS 7: use the native flat bar surface. The old custom image
+            // remains only on iOS 6, where UIKit has no barTintColor.
+            tabBar.backgroundImage = nil;
+            tabBar.shadowImage = nil;
             waSetGuardedProperty(tabBar, @"setTranslucent:", @"translucent", @(NO));
             waSetGuardedBarColor(tabBar, @"setBarTintColor:", [self backgroundColor]);
             tabBar.tintColor = [UIColor whiteColor];
@@ -505,6 +545,9 @@ static NSString *waThemeNormalizedNameCache;
             // Unselected stays white at 0.6; selected pops in barColor.
             tabBar.barStyle = UIBarStyleBlack;
             tabBar.selectionIndicatorImage = nil;
+        } else {
+            tabBar.backgroundImage = waTabBarBackgroundImage([self backgroundColor]);
+            tabBar.shadowImage = waTabBarShadowImage();
         }
     } else if ([view isKindOfClass:[UIToolbar class]]) {
         UIToolbar *toolbar = (UIToolbar *)view;

@@ -1,4 +1,4 @@
-TARGET := iphone:clang:7.1:6.1
+TARGET := iphone:clang:7.1:7.0
 ARCHS = armv7 armv7s
 # Release schema: without this, this Theos variant forces DEBUG (-O0, no
 # strip). -Os + strip is a large win on A4/A5 devices (DSP, JSON, image
@@ -20,7 +20,7 @@ wave_FRAMEWORKS = UIKit CoreGraphics CoreFoundation CoreVideo CoreMedia AVFounda
 wave_FILES += Controllers/waDownloadsViewController.m Controllers/waTrackListViewController.m Controllers/waQRScannerViewController.m
 wave_FILES += Services/waDeezerStreamClient.m Services/waDeezerBlowfish.c
 wave_FILES += Vendor/quirc/decode.c Vendor/quirc/identify.c Vendor/quirc/quirc.c Vendor/quirc/version_db.c
-wave_CFLAGS = -fobjc-arc -IVendor -IVendor/OrigamiEngine -IVendor/OrigamiEngine/Plugins
+wave_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -IVendor -IVendor/OrigamiEngine -IVendor/OrigamiEngine/Plugins
 wave_LDFLAGS = -F$(THEOS_PROJECT_DIR)/Vendor -framework FLAC
 
 include $(THEOS_MAKE_PATH)/application.mk

@@ -28,7 +28,7 @@
         self.titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         self.titleLabel.backgroundColor = [UIColor clearColor];
         self.titleLabel.textColor = [UIColor whiteColor];
-        self.titleLabel.font = [waTheme boldFontOfSize:25.0];
+        self.titleLabel.font = [waTheme extraBoldFontOfSize:22.0];
         self.titleLabel.adjustsFontSizeToFitWidth = YES;
         self.titleLabel.minimumScaleFactor = 0.72;
         self.titleLabel.lineBreakMode = NSLineBreakByClipping;
@@ -36,12 +36,12 @@
         self.subtitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         self.subtitleLabel.backgroundColor = [UIColor clearColor];
         self.subtitleLabel.textColor = [waTheme secondaryTextColor];
-        self.subtitleLabel.font = [waTheme secondaryRegularFontOfSize:16.0];
+        self.subtitleLabel.font = [waTheme secondaryRegularFontOfSize:13.0];
         [self addSubview:self.subtitleLabel];
         self.moreButton = [UIButton buttonWithType:UIButtonTypeCustom];
         self.moreButton.backgroundColor = [UIColor clearColor];
-        self.moreButton.titleLabel.font = [UIFont systemFontOfSize:38.0];
-        [self.moreButton setTitle:@"›" forState:UIControlStateNormal];
+        self.moreButton.titleLabel.font = [waTheme mediumFontOfSize:13.0];
+        [self.moreButton setTitle:@"See all" forState:UIControlStateNormal];
         self.moreButton.accessibilityLabel = @"Show more";
         [self.moreButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
         [self.moreButton addTarget:self action:@selector(morePressed:) forControlEvents:UIControlEventTouchUpInside];
@@ -106,20 +106,20 @@
 - (CGFloat)preferredHeight {
     BOOL list = [self.layout isEqualToString:@"song-list"];
     BOOL grid = [self.layout isEqualToString:@"explore-grid"];
-    if (list || grid) return self.compact ? 250.0 : 285.0;
-    if ([self.layout isEqualToString:@"circle"]) return self.compact ? 230.0 : 270.0;
-    // Leave room for two title lines and up to three description lines below
-    // the 160pt artwork. Text must not be clipped by the collection cell.
-    return self.compact ? (self.compactLandscape ? 253.0 : 295.0) : 345.0;
+    if (list || grid) return self.compact ? 238.0 : 266.0;
+    if ([self.layout isEqualToString:@"circle"]) return self.compact ? 220.0 : 264.0;
+    // Keep the Home shelf compact enough to show its next section on a
+    // 3.5-inch display while leaving room for the card title and subtitle.
+    return self.compact ? (self.compactLandscape ? 236.0 : 266.0) : 300.0;
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat width = self.bounds.size.width;
     self.titleLabel.frame = CGRectMake(18.0, 4.0, MAX(0.0, width - (self.moreButton.hidden ? 36.0 : 78.0)), 34.0);
-    self.subtitleLabel.frame = CGRectMake(18.0, 39.0, width - 36.0, 25.0);
-    self.moreButton.frame = CGRectMake(width - 56.0, 0.0, 42.0, 42.0);
-    CGFloat top = self.subtitleLabel.text.length ? 72.0 : 48.0;
+    self.subtitleLabel.frame = CGRectMake(18.0, 36.0, width - 36.0, 20.0);
+    self.moreButton.frame = CGRectMake(width - 70.0, 0.0, 64.0, 34.0);
+    CGFloat top = self.subtitleLabel.text.length ? 58.0 : 40.0;
     CGFloat collectionHeight = MAX(0.0, self.bounds.size.height - top);
     // Keep the scroll viewport full width. The visual side margins belong to
     // the flow layout; putting the left margin on the frame made the
@@ -129,11 +129,11 @@
     self.collectionView.hidden = self.items.count == 0;
     UICollectionViewFlowLayout *flow = (UICollectionViewFlowLayout *)self.collectionView.collectionViewLayout;
     CGSize itemSize;
-    if ([self.layout isEqualToString:@"circle"]) itemSize = self.compact ? CGSizeMake(width >= 600.0 ? 106.0 : 96.0, 176.0) : CGSizeMake(112.0, 215.0);
+    if ([self.layout isEqualToString:@"circle"]) itemSize = self.compact ? CGSizeMake(width >= 600.0 ? 106.0 : 96.0, 176.0) : CGSizeMake(112.0, 205.0);
     else if ([self.layout isEqualToString:@"song-list"]) itemSize = CGSizeMake(MAX(290.0, width - 36.0), self.compact ? 68.0 : 76.0);
     else if ([self.layout isEqualToString:@"explore-grid"]) itemSize = self.compact ? CGSizeMake(132.0, 100.0) : CGSizeMake(150.0, 112.0);
     else if (self.compact) itemSize = CGSizeMake(width >= 600.0 ? 150.0 : 132.0, self.compactLandscape ? 205.0 : 235.0);
-    else itemSize = CGSizeMake(160.0, 270.0);
+    else itemSize = CGSizeMake(width >= 600.0 ? 150.0 : 142.0, 240.0);
     if (!CGSizeEqualToSize(flow.itemSize, itemSize)) {
         flow.itemSize = itemSize;
         [flow invalidateLayout];

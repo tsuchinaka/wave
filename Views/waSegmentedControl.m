@@ -8,6 +8,15 @@ static UIImage *waSegmentButtonImage(UIColor *baseColor, BOOL selected, BOOL hig
         CGSize size = CGSizeMake(100.0, 32.0);
         UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
         CGContextRef context = UIGraphicsGetCurrentContext();
+        if ([waTheme isModernSystem]) {
+            UIColor *fill = selected ? baseColor : [UIColor colorWithWhite:1.0 alpha:0.08];
+            if (highlighted) fill = selected ? [UIColor colorWithWhite:1.0 alpha:0.20] : [UIColor colorWithWhite:1.0 alpha:0.14];
+            [fill setFill];
+            CGContextFillRect(context, (CGRect){CGPointZero, size});
+            UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+            return [image resizableImageWithCapInsets:UIEdgeInsetsMake(0.0, 8.0, 0.0, 8.0)];
+        }
         CGFloat hue = 0.0, saturation = 0.0, brightness = 0.0, alpha = 1.0;
         [baseColor getHue:&hue saturation:&saturation brightness:&brightness alpha:&alpha];
         CGFloat multiplier = selected ? 1.0 : 0.55;
@@ -45,7 +54,7 @@ static UIImage *waSegmentButtonImage(UIColor *baseColor, BOOL selected, BOOL hig
         self.backgroundColor = [UIColor clearColor];
         self.layer.cornerRadius = 7.0;
         self.layer.borderWidth = 1.0;
-    self.layer.borderColor = [UIColor colorWithWhite:0.08 alpha:0.80].CGColor;
+        self.layer.borderColor = ([waTheme isModernSystem] ? [UIColor colorWithWhite:1.0 alpha:0.14] : [UIColor colorWithWhite:0.08 alpha:0.80]).CGColor;
         self.layer.masksToBounds = YES;
         for (NSUInteger index = 0; index < _items.count; index++) {
             UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];

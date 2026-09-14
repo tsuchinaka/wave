@@ -187,9 +187,13 @@ static BOOL waPlaylistTracksAreDownloaded(NSArray *tracks) {
 }
 
 - (NSArray *)tracksValueFromPlaylist:(NSDictionary *)dictionary {
-    for (NSString *key in @[@"tracks", @"songs", @"items"]) {
+    for (NSString *key in @[@"tracks", @"songs", @"items", @"SONGS"]) {
         id value = dictionary[key];
         if ([value isKindOfClass:[NSArray class]]) return value;
+        if ([value isKindOfClass:[NSDictionary class]]) {
+            NSArray *nested = [self tracksValueFromPlaylist:value];
+            if (nested.count) return nested;
+        }
     }
     id data = dictionary[@"data"];
     if ([data isKindOfClass:[NSArray class]]) return data;
@@ -303,13 +307,25 @@ static BOOL waPlaylistTracksAreDownloaded(NSArray *tracks) {
     [self.navigationSpinner startAnimating];
     self.infoCard.stateLabel.text = @"Loading playlist…";
     [self layoutInfoCard];
-    [[waAPIClient sharedClient] playlistWithID:playlistID completion:^(NSDictionary *playlist, NSError *error) {
+    NSString *homeKind = [self.playlist[@"homeKind"] isKindOfClass:[NSString class]] ? [self.playlist[@"homeKind"] lowercaseString] : @"";
+    NSString *smartTracklistID = waPlaylistString(self.playlist, @[@"smartTracklistID"]);
+    BOOL isSmartTracklist = [homeKind isEqualToString:@"smarttracklist"] || smartTracklistID.length > 0;
+    if (isSmartTracklist && self.items.count) {
+        [self.navigationSpinner stopAnimating];
+        self.navigationItem.titleView = nil;
+        self.infoCard.stateLabel.text = @"";
+        [self updateInfoCard];
+        [self.tracksTableView reloadData];
+        return;
+    }
+    void (^loaded)(NSDictionary *, NSError *) = ^(NSDictionary *playlist, NSError *error) {
         if (generation != self.requestGeneration) return;
         [self.navigationSpinner stopAnimating];
         self.navigationItem.titleView = nil;
         if (error || ![playlist isKindOfClass:[NSDictionary class]]) {
-            self.infoCard.stateLabel.text = @"Unable to load playlist";
+            self.infoCard.stateLabel.text = self.items.count ? @"" : @"Unable to load playlist";
             [self layoutInfoCard];
+            [self.tracksTableView reloadData];
             return;
         }
         NSArray *tracks = [self tracksValueFromPlaylist:playlist];
@@ -319,7 +335,9 @@ static BOOL waPlaylistTracksAreDownloaded(NSArray *tracks) {
         self.infoCard.stateLabel.text = self.items.count ? @"" : @"No songs found";
         [self updateInfoCard];
         [self.tracksTableView reloadData];
-    }];
+    };
+    if (isSmartTracklist) [[waAPIClient sharedClient] smartTracklistWithIdentifier:smartTracklistID.length ? smartTracklistID : playlistID completion:loaded];
+    else [[waAPIClient sharedClient] playlistWithID:playlistID completion:loaded];
 }
 
 - (void)catalogInfoCardDidPressLike:(waCatalogInfoCard *)card {

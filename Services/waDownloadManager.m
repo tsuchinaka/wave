@@ -6,7 +6,6 @@
 #import "waDeezerBlowfish.h"
 #import "waDebugLog.h"
 #import <UIKit/UIKit.h>
-#import <objc/runtime.h>
 
 NSString * const waDownloadManagerDidChangeNotification = @"waDownloadManagerDidChangeNotification";
 
@@ -23,6 +22,7 @@ NSString *waFileSizeString(unsigned long long bytes) {
 @interface waDownloadConnectionContext : NSObject
 @property (nonatomic, strong) waDownload *download;
 @property (nonatomic, strong) NSFileHandle *handle;
+@property (nonatomic, strong) dispatch_queue_t fileQueue;
 @property (nonatomic, copy) NSString *temporaryPath;
 @property (nonatomic, copy) NSString *finalPath;
 @property (nonatomic, assign) long long bytesExpected;
@@ -46,11 +46,12 @@ NSString *waFileSizeString(unsigned long long bytes) {
 - (BOOL)isCancelled { @synchronized (self) { return self.cancelled; } }
 @end
 
-@interface waDownloadManager ()
+@interface waDownloadManager () <NSURLSessionDataDelegate>
 @property (nonatomic, strong) NSMutableDictionary *downloads;
 @property (nonatomic, strong) NSMutableDictionary *connections;
 @property (nonatomic, strong) NSMutableArray *pendingIdentifiers;
 @property (nonatomic, strong) NSMutableSet *resolvingIdentifiers;
+@property (nonatomic, strong) NSMutableSet *soloSessionIdentifiers;
 @property (nonatomic, strong) dispatch_queue_t persistenceQueue;
 @property (nonatomic, strong) dispatch_queue_t fileQueue;
 @property (nonatomic, strong) dispatch_queue_t statisticsQueue;
@@ -58,6 +59,7 @@ NSString *waFileSizeString(unsigned long long bytes) {
 @property (nonatomic, assign) unsigned long long downloadedBytesValue;
 @property (nonatomic, assign) UIBackgroundTaskIdentifier backgroundTask;
 @property (nonatomic, strong) NSMutableDictionary *lastProgressNotifications;
+@property (nonatomic, strong) NSURLSession *downloadSession;
 @end
 
 @implementation waDownloadManager
@@ -82,6 +84,7 @@ NSString *waFileSizeString(unsigned long long bytes) {
         _connections = [[NSMutableDictionary alloc] init];
         _pendingIdentifiers = [[NSMutableArray alloc] init];
         _resolvingIdentifiers = [[NSMutableSet alloc] init];
+        _soloSessionIdentifiers = [[NSMutableSet alloc] init];
         _persistenceQueue = dispatch_queue_create("com.bytebox.wave.downloads.persistence", DISPATCH_QUEUE_SERIAL);
         _fileQueue = dispatch_queue_create("com.bytebox.wave.downloads.files", DISPATCH_QUEUE_SERIAL);
         _statisticsQueue = dispatch_queue_create("com.bytebox.wave.downloads.statistics", DISPATCH_QUEUE_SERIAL);
@@ -89,6 +92,11 @@ NSString *waFileSizeString(unsigned long long bytes) {
         _artworkQueue.maxConcurrentOperationCount = 2;
         _backgroundTask = UIBackgroundTaskInvalid;
         _lastProgressNotifications = [[NSMutableDictionary alloc] init];
+        NSOperationQueue *delegateQueue = [[NSOperationQueue alloc] init];
+        delegateQueue.maxConcurrentOperationCount = 4;
+        _downloadSession = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]
+                                                          delegate:self
+                                                     delegateQueue:delegateQueue];
         _maximumParallelDownloads = MAX(1, [waPreferences sharedPreferences].maximumParallelDownloads);
 
         NSDictionary *saved = [NSDictionary dictionaryWithContentsOfFile:[[self storePath] stringByAppendingPathComponent:@"downloads.plist"]];
@@ -135,7 +143,15 @@ NSString *waFileSizeString(unsigned long long bytes) {
             download.currentGroupTitle = [value[@"currentGroupTitle"] isKindOfClass:[NSString class]] ? value[@"currentGroupTitle"] : nil;
             [download addCategory:waDownloadCategorySong contextIdentifier:key];
 
-            if (download.state == waDownloadStateDownloading) download.state = waDownloadStateQueued;
+            // Recover an interrupted transfer from the decrypted .part file.
+            if (download.state == waDownloadStateDownloading) {
+                download.state = waDownloadStateQueued;
+                unsigned long long partBytes = [[[NSFileManager defaultManager] attributesOfItemAtPath:[download.filePath stringByAppendingString:@".part"] error:NULL] fileSize];
+                download.bytesReceived = partBytes;
+                if (download.bytesExpected > 0) download.progress = MIN(1.0f, (float)partBytes / (float)download.bytesExpected);
+                else download.progress = 0.0f;
+                migrated = YES;
+            }
             if (download.state == waDownloadStateCompleted) {
                 NSString *actualPath = download.filePath;
                 if (![[NSFileManager defaultManager] fileExistsAtPath:actualPath]) {
@@ -152,6 +168,7 @@ NSString *waFileSizeString(unsigned long long bytes) {
             }
             _downloads[key] = download;
             if (download.state == waDownloadStateQueued) [_pendingIdentifiers addObject:key];
+            if ((download.state == waDownloadStateQueued || download.state == waDownloadStateDownloading) && download.currentCategory == waDownloadCategorySong) [_soloSessionIdentifiers addObject:key];
         }
         if (migrated) [self persist];
         [self promoteQueuedDownloads];
@@ -258,22 +275,38 @@ NSString *waFileSizeString(unsigned long long bytes) {
 
     BOOL active = download.state == waDownloadStateQueued || download.state == waDownloadStateDownloading;
     BOOL available = download.state == waDownloadStateCompleted && [[NSFileManager defaultManager] fileExistsAtPath:download.filePath];
+    if (category == waDownloadCategorySong && !available) {
+        if (![self hasActiveSoloSessionDownload]) [self.soloSessionIdentifiers removeAllObjects];
+        [self.soloSessionIdentifiers addObject:identifier];
+    }
     // waDownload is initialized as Queued so restored downloads can keep that
     // state. A newly created object is not yet in pendingIdentifiers, though,
     // and must still be added before it can be promoted and started.
     if ((isNewDownload || !active) && !available) {
-        [[NSFileManager defaultManager] removeItemAtPath:[download.filePath stringByAppendingString:@".part"] error:NULL];
+        // Keep a valid partial file so a retry can resume it with Range.
+        if (![[NSFileManager defaultManager] fileExistsAtPath:[download.filePath stringByAppendingString:@".part"]]) {
+            [[NSFileManager defaultManager] createFileAtPath:[download.filePath stringByAppendingString:@".part"] contents:nil attributes:nil];
+        }
         download.ticketURL = ticketURL;
         download.downloadQuality = [waPreferences sharedPreferences].downloadQuality;
         download.state = waDownloadStateQueued;
-        download.progress = 0.0f;
-        download.bytesReceived = 0;
-        download.bytesExpected = 0;
+        unsigned long long partBytes = [[[NSFileManager defaultManager] attributesOfItemAtPath:[download.filePath stringByAppendingString:@".part"] error:NULL] fileSize];
+        download.bytesReceived = partBytes;
+        if (download.bytesExpected <= 0 || partBytes == 0) download.bytesExpected = 0;
+        download.progress = download.bytesExpected > 0 ? MIN(1.0f, (float)partBytes / (float)download.bytesExpected) : 0.0f;
         if (![self.pendingIdentifiers containsObject:identifier]) [self.pendingIdentifiers addObject:identifier];
     }
     [self persist];
     [self notifyChangeForDownload:download];
     [self promoteQueuedDownloads];
+}
+
+- (BOOL)hasActiveSoloSessionDownload {
+    for (NSString *identifier in self.soloSessionIdentifiers) {
+        waDownload *download = self.downloads[identifier];
+        if (download.state == waDownloadStateQueued || download.state == waDownloadStateDownloading) return YES;
+    }
+    return NO;
 }
 
 - (void)enqueueDownloadWithItem:(waMediaItem *)item category:(waDownloadCategory)category contextIdentifier:(NSString *)contextIdentifier {
@@ -365,8 +398,10 @@ NSString *waFileSizeString(unsigned long long bytes) {
         waDownloadManager *strongSelf = weakSelf;
         if (!strongSelf) return;
         [strongSelf.resolvingIdentifiers removeObject:download.identifier ?: @""];
-        [strongSelf promoteQueuedDownloads];
-        if (strongSelf.downloads[download.identifier] != download || download.state != waDownloadStateDownloading) return;
+        if (strongSelf.downloads[download.identifier] != download || download.state != waDownloadStateDownloading) {
+            [strongSelf promoteQueuedDownloads];
+            return;
+        }
         if (cdnURL) {
             if (resolvedQuality != download.downloadQuality) {
                 download.downloadQuality = resolvedQuality;
@@ -377,46 +412,58 @@ NSString *waFileSizeString(unsigned long long bytes) {
             }
             NSString *rawID = [[waDeezerStreamClient sharedClient] rawIdentifier:download.identifier];
             [strongSelf beginConnectionToURL:cdnURL download:download deezerDecrypt:YES rawID:rawID];
+            // Open the resolved connection before filling the freed slot. This
+            // keeps connections + URL resolutions within the configured cap.
+            [strongSelf promoteQueuedDownloads];
             return;
         }
         [[waDebugLog sharedLog] log:@"Direct download failed (%@), serverless - no fallback", error.localizedDescription ?: @"unknown"];
         [strongSelf failDownloadBeforeConnection:download];
+        [strongSelf promoteQueuedDownloads];
     }];
 }
 
 - (void)beginConnectionToURL:(NSURL *)url download:(waDownload *)download deezerDecrypt:(BOOL)deezerDecrypt rawID:(NSString *)rawID {
     if (!url) { [self failDownloadBeforeConnection:download]; return; }
     NSString *temp = [download.filePath stringByAppendingString:@".part"];
-    [[NSFileManager defaultManager] removeItemAtPath:temp error:NULL];
-    if (![[NSFileManager defaultManager] createFileAtPath:temp contents:nil attributes:nil]) { [self failDownloadBeforeConnection:download]; return; }
+    unsigned long long existingBytes = [[[NSFileManager defaultManager] attributesOfItemAtPath:temp error:NULL] fileSize];
+    // Deezer's cipher resets at 2048-byte boundaries. Never resume from a
+    // partial cipher block; truncate the decrypted file to a safe boundary.
+    unsigned long long resumeBytes = existingBytes - (existingBytes % 2048);
+    if (resumeBytes != existingBytes) {
+        NSFileHandle *truncateHandle = [NSFileHandle fileHandleForWritingAtPath:temp];
+        [truncateHandle truncateFileAtOffset:resumeBytes];
+        [truncateHandle closeFile];
+    }
+    if (![[NSFileManager defaultManager] fileExistsAtPath:temp] && ![[NSFileManager defaultManager] createFileAtPath:temp contents:nil attributes:nil]) { [self failDownloadBeforeConnection:download]; return; }
     NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:temp];
     if (!handle) { [[NSFileManager defaultManager] removeItemAtPath:temp error:NULL]; [self failDownloadBeforeConnection:download]; return; }
+    [handle seekToEndOfFile];
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     [request setValue:@"Wave/1.0" forHTTPHeaderField:@"User-Agent"];
     request.allowsCellularAccess = [waPreferences sharedPreferences].cellularDataAllowed;
+    if (resumeBytes > 0) [request setValue:[NSString stringWithFormat:@"bytes=%llu-", resumeBytes] forHTTPHeaderField:@"Range"];
     download.state = waDownloadStateDownloading;
-    NSURLConnection *connection = [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:NO];
-    if (!connection) { [handle closeFile]; [self failDownloadBeforeConnection:download]; return; }
-    NSOperationQueue *delegateQueue = [[NSOperationQueue alloc] init];
-    delegateQueue.maxConcurrentOperationCount = 1;
     waDownloadConnectionContext *context = [[waDownloadConnectionContext alloc] init];
     context.download = download;
     context.handle = handle;
+    context.fileQueue = dispatch_queue_create("com.bytebox.wave.download.file", DISPATCH_QUEUE_SERIAL);
     context.temporaryPath = temp;
     context.finalPath = download.filePath;
     context.deezerDecrypt = deezerDecrypt;
-    context.decryptOffset = 0;
+    context.decryptOffset = resumeBytes;
+    context.bytesReceived = resumeBytes;
     context.decryptRemainder = [NSMutableData data];
     if (deezerDecrypt && rawID.length) {
         unsigned char key[16];
         waDeezerDeriveKey([rawID UTF8String], key);
         context.deezerKeyData = [NSData dataWithBytes:key length:16];
     }
-    objc_setAssociatedObject(connection, @selector(contextForConnection:), context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [connection setDelegateQueue:delegateQueue];
-    NSValue *connectionKey = [NSValue valueWithNonretainedObject:connection];
-    self.connections[connectionKey] = @{ @"download": download, @"handle": handle, @"connection": connection, @"context": context, @"delegateQueue": delegateQueue, @"networkActivity": @YES };
+    NSURLSessionDataTask *task = [self.downloadSession dataTaskWithRequest:request];
+    if (!task) { [handle closeFile]; [self failDownloadBeforeConnection:download]; return; }
+    NSNumber *taskKey = @(task.taskIdentifier);
+    self.connections[taskKey] = @{ @"download": download, @"handle": handle, @"task": task, @"context": context, @"networkActivity": @YES };
     if (self.backgroundTask == UIBackgroundTaskInvalid) {
         __weak waDownloadManager *weakSelf = self;
         self.backgroundTask = [[UIApplication sharedApplication] beginBackgroundTaskWithExpirationHandler:^{
@@ -433,11 +480,11 @@ NSString *waFileSizeString(unsigned long long bytes) {
     waNetworkActivityBegin();
     [self persist];
     [self notifyChangeForDownload:download];
-    [connection start];
+    [task resume];
 }
 
-- (NSValue *)keyForConnection:(NSURLConnection *)connection { return [NSValue valueWithNonretainedObject:connection]; }
-- (waDownloadConnectionContext *)contextForConnection:(NSURLConnection *)connection { return objc_getAssociatedObject(connection, @selector(contextForConnection:)); }
+- (NSNumber *)keyForTask:(NSURLSessionTask *)task { return @(task.taskIdentifier); }
+- (waDownloadConnectionContext *)contextForTask:(NSURLSessionTask *)task { return self.connections[[self keyForTask:task]][@"context"]; }
 
 - (void)cancelDownloadWithIdentifier:(NSString *)identifier {
     if (![NSThread isMainThread]) {
@@ -449,15 +496,16 @@ NSString *waFileSizeString(unsigned long long bytes) {
     if (!download) return;
     [self.pendingIdentifiers removeObject:identifier];
     [self.resolvingIdentifiers removeObject:identifier];
-    for (NSValue *key in [self.connections allKeys]) {
-        NSURLConnection *connection = [key nonretainedObjectValue];
+    [self.soloSessionIdentifiers removeObject:identifier];
+    for (NSNumber *key in [self.connections allKeys]) {
+        NSURLSessionDataTask *task = self.connections[key][@"task"];
         NSDictionary *context = self.connections[key];
         if (context[@"download"] != download) continue;
-        [connection cancel];
+        [task cancel];
         [self endNetworkActivityForContext:context];
         [context[@"context"] cancel];
         NSFileHandle *handle = context[@"handle"];
-        dispatch_sync(self.fileQueue, ^{
+        dispatch_sync([context[@"context"] fileQueue], ^{
             [handle closeFile];
             [[NSFileManager defaultManager] removeItemAtPath:[download.filePath stringByAppendingString:@".part"] error:NULL];
         });
@@ -474,20 +522,32 @@ NSString *waFileSizeString(unsigned long long bytes) {
     [self promoteQueuedDownloads];
 }
 
-- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
-    waDownloadConnectionContext *context = [self contextForConnection:connection];
-    if (!context || [context isCancelled]) return;
-    if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
-        NSInteger status = [(NSHTTPURLResponse *)response statusCode];
-        if (status < 200 || status >= 300) {
-            [connection cancel];
-            [self connection:connection didFailWithError:nil];
-            return;
-        }
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler {
+    (void)session;
+    waDownloadConnectionContext *context = [self contextForTask:task];
+    if (!context || [context isCancelled]) {
+        if (completionHandler) completionHandler(NSURLSessionResponseCancel);
+        return;
     }
-    context.bytesReceived = 0;
-    context.bytesExpected = response.expectedContentLength > 0 ? response.expectedContentLength : 0;
-    context.decryptOffset = 0;
+    NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+    BOOL resuming = context.bytesReceived > 0;
+    if (resuming && status == 200) {
+        dispatch_sync(context.fileQueue, ^{
+            [context.handle truncateFileAtOffset:0];
+            [context.handle seekToFileOffset:0];
+        });
+        context.bytesReceived = 0;
+        context.decryptOffset = 0;
+        resuming = NO;
+    }
+    if (status < 200 || status >= 300 || (resuming && status != 206)) {
+        [task cancel];
+        if (completionHandler) completionHandler(NSURLSessionResponseCancel);
+        [self URLSession:session task:task didCompleteWithError:nil];
+        return;
+    }
+    long long contentLength = response.expectedContentLength > 0 ? response.expectedContentLength : 0;
+    context.bytesExpected = contentLength > 0 ? (long long)context.bytesReceived + contentLength : 0;
     [context.decryptRemainder setLength:0];
     dispatch_async(dispatch_get_main_queue(), ^{
         if ([context isCancelled] || self.downloads[context.download.identifier] != context.download) return;
@@ -495,17 +555,19 @@ NSString *waFileSizeString(unsigned long long bytes) {
         if ([servedQuality isEqualToString:@"128"]) context.download.downloadQuality = 0;
         else if ([servedQuality isEqualToString:@"320"]) context.download.downloadQuality = 1;
         else if ([servedQuality.lowercaseString isEqualToString:@"lossless"]) context.download.downloadQuality = 2;
-        context.download.bytesReceived = 0;
+        context.download.bytesReceived = context.bytesReceived;
         context.download.bytesExpected = context.bytesExpected;
         context.download.progress = 0.0f;
         [self.lastProgressNotifications removeObjectForKey:context.download.identifier];
         [self persist];
         [self notifyChangeForDownload:context.download];
     });
+    if (completionHandler) completionHandler(NSURLSessionResponseAllow);
 }
 
-- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
-    waDownloadConnectionContext *context = [self contextForConnection:connection];
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
+    (void)session;
+    waDownloadConnectionContext *context = [self contextForTask:task];
     if (!context || [context isCancelled]) return;
     __block BOOL wrote = YES;
     // The delegate's NSData stays valid for the duration of this call and the
@@ -522,8 +584,8 @@ NSString *waFileSizeString(unsigned long long bytes) {
             unsigned long chunkIndex = (unsigned long)(context.decryptOffset / 2048);
             if (waDeezerDecryptChunk(key, chunkIndex, chunkBytes, 2048) != 0) {
                 [[waDebugLog sharedLog] log:@"Download decrypt failed at chunk %lu", chunkIndex];
-                [connection cancel];
-                [self connection:connection didFailWithError:nil];
+                [task cancel];
+                [self URLSession:session task:task didCompleteWithError:nil];
                 return;
             }
             [plain appendBytes:chunkBytes length:2048];
@@ -533,12 +595,12 @@ NSString *waFileSizeString(unsigned long long bytes) {
         if (!plain.length) return;
         chunk = plain;
     }
-    dispatch_sync(self.fileQueue, ^{
+    dispatch_sync(context.fileQueue, ^{
         if ([context isCancelled]) { wrote = NO; return; }
         @try { [context.handle writeData:chunk]; }
         @catch (NSException *exception) { (void)exception; wrote = NO; }
     });
-    if (!wrote) { [connection cancel]; [self connection:connection didFailWithError:nil]; return; }
+    if (!wrote) { [task cancel]; [self URLSession:session task:task didCompleteWithError:nil]; return; }
     context.bytesReceived += chunk.length;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (now - context.lastProgressDispatch < 0.25) return;
@@ -553,16 +615,21 @@ NSString *waFileSizeString(unsigned long long bytes) {
     });
 }
 
-- (void)connectionDidFinishLoading:(NSURLConnection *)connection {
-    waDownloadConnectionContext *context = [self contextForConnection:connection];
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    waDownloadConnectionContext *context = [self contextForTask:task];
     if (!context || ![context beginFinalization]) return;
+    if (error) {
+        dispatch_sync(context.fileQueue, ^{ [context.handle closeFile]; });
+        dispatch_async(dispatch_get_main_queue(), ^{ [self finishContext:context task:task succeeded:NO]; });
+        return;
+    }
     if (context.deezerDecrypt && context.decryptRemainder.length && context.deezerKeyData.length == 16) {
         NSUInteger rest = context.decryptRemainder.length;
         NSMutableData *tail = [NSMutableData dataWithData:context.decryptRemainder];
         waDeezerDecryptChunk((const unsigned char *)context.deezerKeyData.bytes, (unsigned long)(context.decryptOffset / 2048), tail.mutableBytes, rest);
         [context.decryptRemainder setLength:0];
         context.decryptOffset += rest;
-        dispatch_sync(self.fileQueue, ^{
+        dispatch_sync(context.fileQueue, ^{
             if (![context isCancelled]) {
                 @try { [context.handle writeData:tail]; context.bytesReceived += tail.length; }
                 @catch (NSException *exception) { (void)exception; }
@@ -571,7 +638,7 @@ NSString *waFileSizeString(unsigned long long bytes) {
     }
     NSString *filePath = context.finalPath;
     __block BOOL moved = NO;
-    dispatch_sync(self.fileQueue, ^{
+    dispatch_sync(context.fileQueue, ^{
         [context.handle closeFile];
         if (![context isCancelled]) {
             [[NSFileManager defaultManager] removeItemAtPath:filePath error:NULL];
@@ -579,21 +646,10 @@ NSString *waFileSizeString(unsigned long long bytes) {
         }
         if (!moved) [[NSFileManager defaultManager] removeItemAtPath:context.temporaryPath error:NULL];
     });
-    dispatch_async(dispatch_get_main_queue(), ^{ [self finishContext:context connection:connection succeeded:moved]; });
+    dispatch_async(dispatch_get_main_queue(), ^{ [self finishContext:context task:task succeeded:moved]; });
 }
 
-- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
-    (void)error;
-    waDownloadConnectionContext *context = [self contextForConnection:connection];
-    if (!context || ![context beginFinalization]) return;
-    dispatch_sync(self.fileQueue, ^{
-        [context.handle closeFile];
-        [[NSFileManager defaultManager] removeItemAtPath:context.temporaryPath error:NULL];
-    });
-    dispatch_async(dispatch_get_main_queue(), ^{ [self finishContext:context connection:connection succeeded:NO]; });
-}
-
-- (void)finishContext:(waDownloadConnectionContext *)context connection:(NSURLConnection *)connection succeeded:(BOOL)succeeded {
+- (void)finishContext:(waDownloadConnectionContext *)context task:(NSURLSessionTask *)task succeeded:(BOOL)succeeded {
     if (!context || [context isCancelled]) return;
     waDownload *download = context.download;
     if (self.downloads[download.identifier] != download) return;
@@ -602,8 +658,8 @@ NSString *waFileSizeString(unsigned long long bytes) {
     download.state = succeeded ? waDownloadStateCompleted : waDownloadStateFailed;
     if (succeeded) download.progress = 1.0f;
     if (download.bytesExpected <= 0) download.bytesExpected = (long long)download.bytesReceived;
-    [self endNetworkActivityForContext:self.connections[[self keyForConnection:connection]]];
-    [self.connections removeObjectForKey:[self keyForConnection:connection]];
+    [self endNetworkActivityForContext:self.connections[[self keyForTask:task]]];
+    [self.connections removeObjectForKey:[self keyForTask:task]];
     [self.lastProgressNotifications removeObjectForKey:download.identifier];
     if (!self.connections.count && self.backgroundTask != UIBackgroundTaskInvalid) {
         [[UIApplication sharedApplication] endBackgroundTask:self.backgroundTask];
@@ -637,6 +693,105 @@ NSString *waFileSizeString(unsigned long long bytes) {
     NSUInteger count = 0;
     for (waDownload *download in self.downloads.allValues) if ([self localPathForIdentifier:download.identifier]) count++;
     return count;
+}
+
+- (NSUInteger)activeDownloadCount {
+    NSUInteger count = 0;
+    for (waDownload *download in self.downloads.allValues) {
+        if (download.state == waDownloadStateQueued || download.state == waDownloadStateDownloading) count++;
+    }
+    return count;
+}
+
+- (NSDictionary *)preferredActiveDownloadGroup {
+    NSMutableDictionary *groups = [NSMutableDictionary dictionary];
+    NSUInteger ungroupedActiveCount = 0;
+    for (waDownload *download in self.downloads.allValues) {
+        if (download.state != waDownloadStateQueued && download.state != waDownloadStateDownloading) continue;
+        BOOL isGroup = (download.currentCategory == waDownloadCategoryAlbum || download.currentCategory == waDownloadCategoryPlaylist) && download.currentContextIdentifier.length && download.currentGroupTitle.length;
+        if (!isGroup) {
+            ungroupedActiveCount++;
+            continue;
+        }
+        NSString *key = [NSString stringWithFormat:@"%ld|%@|%@", (long)download.currentCategory, download.currentContextIdentifier, download.currentGroupTitle];
+        NSMutableDictionary *group = groups[key];
+        if (!group) {
+            group = [@{ @"category": @(download.currentCategory),
+                        @"context": download.currentContextIdentifier,
+                        @"title": download.currentGroupTitle,
+                        @"activeCount": @0 } mutableCopy];
+            groups[key] = group;
+        }
+        group[@"activeCount"] = @([group[@"activeCount"] unsignedIntegerValue] + 1);
+    }
+    // Only expose a group title when the active queue represents one complete
+    // album/playlist batch. If the user starts unrelated downloads together,
+    // keep the neutral Library title and use the global aggregate instead.
+    if (ungroupedActiveCount || groups.count != 1) return nil;
+    return [groups.allValues objectAtIndex:0];
+}
+
+- (NSArray *)downloadsForProgressGroup:(NSDictionary *)group {
+    if (!group) return @[];
+    waDownloadCategory category = [group[@"category"] integerValue];
+    NSString *context = group[@"context"];
+    if (!context.length) return @[];
+    NSMutableArray *downloads = [NSMutableArray array];
+    for (waDownload *download in self.downloads.allValues) {
+        if (download.state == waDownloadStateCancelled) continue;
+        if ([[download contextIdentifiersForCategory:category] containsObject:context]) [downloads addObject:download];
+    }
+    return downloads;
+}
+
+- (float)progressForDownloads:(NSArray *)downloads {
+    if (!downloads.count) return 0.0f;
+
+    // Weight by bytes when every item has a known size. If a CDN does not
+    // provide Content-Length, use a per-item average so an unknown queued item
+    // cannot make the bar jump to 100% while it is still pending.
+    unsigned long long totalExpected = 0;
+    unsigned long long totalReceived = 0;
+    BOOL hasUnknownSize = NO;
+    float perItemTotal = 0.0f;
+    for (waDownload *download in downloads) {
+        float itemProgress = MAX(0.0f, MIN(1.0f, download.progress));
+        if (download.state == waDownloadStateFailed) itemProgress = 0.0f;
+        if (download.bytesExpected > 0) {
+            unsigned long long expected = (unsigned long long)download.bytesExpected;
+            unsigned long long received = MIN(expected, download.bytesReceived);
+            totalExpected += expected;
+            totalReceived += received;
+            itemProgress = MIN(1.0f, (float)received / (float)expected);
+        } else {
+            hasUnknownSize = YES;
+        }
+        perItemTotal += itemProgress;
+    }
+    if (!hasUnknownSize && totalExpected > 0) return MIN(1.0f, (float)totalReceived / (float)totalExpected);
+    return MIN(1.0f, perItemTotal / (float)downloads.count);
+}
+
+- (NSString *)activeDownloadGroupTitle {
+    return [self preferredActiveDownloadGroup][@"title"];
+}
+
+- (float)overallDownloadProgress {
+    NSDictionary *group = [self preferredActiveDownloadGroup];
+    if (group) return [self progressForDownloads:[self downloadsForProgressGroup:group]];
+
+    NSMutableArray *active = [NSMutableArray array];
+    for (waDownload *download in self.downloads.allValues) {
+        if (download.state == waDownloadStateQueued || download.state == waDownloadStateDownloading) [active addObject:download];
+    }
+    // Keep completed/failed members of the current solo-song session in the
+    // denominator so a multi-song queue also advances once from 0 to 100%.
+    for (NSString *identifier in self.soloSessionIdentifiers) {
+        waDownload *download = self.downloads[identifier];
+        if (!download || download.state == waDownloadStateCancelled || [active containsObject:download]) continue;
+        [active addObject:download];
+    }
+    return [self progressForDownloads:active];
 }
 
 - (NSArray *)allDownloads {
@@ -679,10 +834,10 @@ NSString *waFileSizeString(unsigned long long bytes) {
         return;
     }
     NSArray *contexts = [self.connections.allValues copy];
-    for (NSValue *key in [self.connections allKeys]) {
-        NSURLConnection *connection = [key nonretainedObjectValue];
+    for (NSNumber *key in [self.connections allKeys]) {
+        NSURLSessionDataTask *task = self.connections[key][@"task"];
         [self.connections[key][@"context"] cancel];
-        [connection cancel];
+        [task cancel];
         [self endNetworkActivityForContext:self.connections[key]];
     }
     [self.connections removeAllObjects];
@@ -724,12 +879,12 @@ NSString *waFileSizeString(unsigned long long bytes) {
     waDownload *download = self.downloads[identifier];
     if (!download) { if (completion) completion(nil); return; }
     // Cancel active connection if any
-    for (NSValue *key in [self.connections allKeys]) {
+    for (NSNumber *key in [self.connections allKeys]) {
         NSDictionary *context = self.connections[key];
         if (context[@"download"] != download) continue;
-        NSURLConnection *connection = [key nonretainedObjectValue];
+        NSURLSessionDataTask *task = context[@"task"];
         [context[@"context"] cancel];
-        [connection cancel];
+        [task cancel];
         [self endNetworkActivityForContext:context];
         NSFileHandle *handle = context[@"handle"];
         dispatch_sync(self.fileQueue, ^{
@@ -739,6 +894,7 @@ NSString *waFileSizeString(unsigned long long bytes) {
         [self.connections removeObjectForKey:key];
     }
     [self.pendingIdentifiers removeObject:identifier];
+    [self.soloSessionIdentifiers removeObject:identifier];
     [self.downloads removeObjectForKey:identifier];
     [self refreshDownloadedBytes];
     [self notifyChangeForDownload:nil];
