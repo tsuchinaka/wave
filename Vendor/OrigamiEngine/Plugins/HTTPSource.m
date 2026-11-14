@@ -121,7 +121,7 @@ const NSTimeInterval readTimeout = 1.0;
         thread = [[NSThread alloc] initWithTarget:self
                                          selector:@selector(wa_networkThreadMain)
                                            object:nil];
-        [thread setName:@"com.bytebox.wave.http"];
+        [thread setName:@"com.sokubit.wave.http"];
         [thread start];
     });
     return thread;
@@ -232,7 +232,7 @@ const NSTimeInterval readTimeout = 1.0;
     _bytesWaitingFromCache = 0;
     _connectionDidFail = NO;
     _invalidResponse = NO;
-    _writeQueue = dispatch_queue_create("com.bytebox.wave.stream.write", DISPATCH_QUEUE_SERIAL);
+    _writeQueue = dispatch_queue_create("com.sokubit.wave.stream.write", DISPATCH_QUEUE_SERIAL);
     if (_downloadingSemaphore) { dispatch_release(_downloadingSemaphore); _downloadingSemaphore = NULL; }
     _downloadingSemaphore = dispatch_semaphore_create(0);
     [self prepareCache:[NSString stringWithFormat:@"%lx.%@",

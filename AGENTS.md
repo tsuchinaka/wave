@@ -4,7 +4,7 @@ Guía para quien toque este repo. Leer esto antes de editar.
 
 ## 1. Qué es
 
-**wave** — `com.bytebox.wave` — app iOS (no tweak) con Theos. Target **iOS 5.1**, armv7, SDK `iPhoneOS5.1.sdk`. Cliente Deezer. Versión del paquete en `control:3`.
+**wave** — `com.sokubit.wave` — app iOS (no tweak) con Theos. Target **iOS 5.1**, armv7, SDK `iPhoneOS5.1.sdk`. Cliente Deezer. Versión del paquete en `control:3`.
 
 No es la app 0.1.x. No hay `Controllers/`, `Services/`, `Models/`, `Views/` ni `Audio/`. No hay `waTheme`, `waAPIClient`, `waAudioPlayer` ni `waAppDelegate` en la raíz. Si un doc los cita como archivos vivos, el doc está viejo.
 

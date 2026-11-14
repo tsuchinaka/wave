@@ -1,6 +1,6 @@
 # Wave — estado
 
-Cliente Deezer para iOS 5.1. Paquete `com.bytebox.wave`. Versión de `control:3`. Árbol `Core/`, `Skin/`, `UI/`, `Support/`.
+Cliente Deezer para iOS 5.1. Paquete `com.sokubit.wave`. Versión de `control:3`. Árbol `Core/`, `Skin/`, `UI/`, `Support/`.
 
 La rama 0.1.x (Controllers, Services, Models, Views, Audio, SDK 6.1/7.1, `waTheme`, `waAPIClient`) está retirada. Esos checklists no son contrato. Si un doc los cita como archivos vivos, está viejo.
 

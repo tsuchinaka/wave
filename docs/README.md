@@ -1,6 +1,6 @@
 # Docs — wave (iOS 5.1)
 
-Proyecto **wave** — `com.bytebox.wave` — app Theos, no tweak. Cliente Deezer para iOS 5.1, armv7.
+Proyecto **wave** — `com.sokubit.wave` — app Theos, no tweak. Cliente Deezer para iOS 5.1, armv7.
 
 El árbol `Controllers/`, `Services/`, `Models/`, `Views/` y `Audio/` de la rama 0.1.x ya no existe. La fuente de verdad es el código en `Core/`, `Skin/`, `UI/` y `Support/`.
 
@@ -45,7 +45,7 @@ Core/waPlayer.h                cola, crossfade, EQ, remote control
 Core/waAudioCore.h             un AudioQueue, ring actual + siguiente
 Core/waTLS.h                   TLS 1.2 (mbedTLS) para hosts que SecureTransport 5.1 no negocia
 Skin/waSkin.h                  chrome nativo iOS 5.1
-Resources/Info.plist:52        CFBundleIdentifier com.bytebox.wave
+Resources/Info.plist:52        CFBundleIdentifier com.sokubit.wave
 Resources/Info.plist:79        MinimumOSVersion 5.1
 control:3                      versión del paquete
 ```

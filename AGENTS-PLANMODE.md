@@ -4,7 +4,7 @@ Contraparte de `AGENTS.md`. En este modo se inspecciona y se propone. No se modi
 
 ## 1. Qué es
 
-**wave** — `com.bytebox.wave` — app Theos, no tweak. Target **iOS 5.1**, armv7, SDK `iPhoneOS5.1.sdk`. Cliente Deezer. Versión del paquete en `control:3`.
+**wave** — `com.sokubit.wave` — app Theos, no tweak. Target **iOS 5.1**, armv7, SDK `iPhoneOS5.1.sdk`. Cliente Deezer. Versión del paquete en `control:3`.
 
 No es la app 0.1.x. No hay `Controllers/`, `Services/`, `Models/`, `Views/` ni `Audio/`.
 

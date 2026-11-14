@@ -50,14 +50,14 @@
 		</dict>
 	</dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.bytebox.wave</string>
+	<string>com.sokubit.wave</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>com.bytebox.wave.lastfm</string>
+			<string>com.sokubit.wave.lastfm</string>
 			<key>CFBundleURLSchemes</key>
 			<array><string>wave</string></array>
 		</dict>

@@ -1,6 +1,6 @@
 # wave
 
-Deezer client for iOS 5.1 (armv7), built with Theos. Package `com.bytebox.wave`, version in `control`.
+Deezer client for iOS 5.1 (armv7), built with Theos. Package `com.sokubit.wave`, version in `control`.
 
 ## Build
 

@@ -11,7 +11,7 @@
 NSString * const waSessionDidChangeNotification = @"waSessionDidChangeNotification";
 NSString * const waSessionAuthDidChangeNotification = @"waSessionAuthDidChangeNotification";
 
-static NSString * const waService = @"wave.deezer";
+static NSString * const waService = @"com.sokubit.wave";
 static NSString * const waAccount = @"arl";
 static NSString * const waArlFallback = @"wave.arl";
 static NSString * const waRecentKey = @"wave.recentSearches";

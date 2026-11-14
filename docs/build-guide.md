@@ -31,7 +31,7 @@ make package
 Salida:
 
 - `.theos/` — ignorado
-- `packages/com.bytebox.wave_<version>_iphoneos-arm.deb` — ignorado
+- `packages/com.sokubit.wave_<version>_iphoneos-arm.deb` — ignorado
 - versión del paquete: `control:3`
 
 `make clean && make -j4` cuando cambian flags, frameworks o el estado de Theos no cuadra.
@@ -45,8 +45,8 @@ El ejecutable tiene que quedar legible para `mobile`. El script lo corrige despu
 Inspeccionar el paquete:
 
 ```
-dpkg-deb -I packages/com.bytebox.wave_*.deb
-dpkg-deb -c packages/com.bytebox.wave_*.deb
+dpkg-deb -I packages/com.sokubit.wave_*.deb
+dpkg-deb -c packages/com.sokubit.wave_*.deb
 ```
 
 ## Fallos típicos
