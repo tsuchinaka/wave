@@ -1,6 +1,6 @@
 # wave
 
-Deezer client for iOS 5.1 (armv7), built with Theos.
+Deezer client for iOS 5.1 (armv7), built with Theos. Package `com.bytebox.wave`, version in `control`.
 
 ## Build
 
@@ -8,30 +8,24 @@ Deezer client for iOS 5.1 (armv7), built with Theos.
     make -j4
     make package
 
-SDK: `/home/main/theos/sdks/iPhoneOS5.1.sdk` (deployment 5.1).
+SDK: `/home/main/theos/sdks/iPhoneOS5.1.sdk` (`Makefile` `TARGET := iphone:clang:5.1:5.1`). `./deploy.sh` builds and installs on the device. `./deploy.sh --clean` forces a clean build.
+
+Docs for agents live in `docs/` and `AGENTS.md`.
 
 ## Layout
 
-- `Core/` — Deezer transport, ARL session, quality probing, streaming, decrypt,
-  downloads, artwork, PCM playback.
-- `Skin/` — iOS 5.1 chrome: glossy bars, grouped paper, capsule buttons,
-  Helvetica Neue typography.
-- `UI/` — navigation, browsing, player, queue, lyrics, settings.
-- `Vendor/` — OrigamiEngine decoders, libFLAC 1.4.3 (armv7, min 5.1), quirc.
-- `Support/waIOS5Compat.h` — the few shims iOS 5 lacks (subscripts, alignment
-  enums, safe `@YES` boxing).
+- `Core/` — Deezer gateway and public API, ARL session, quality probe, TLS 1.2, decrypt, downloads, artwork, lyrics, Last.fm, PCM playback.
+- `Skin/` — iOS 5.1 chrome. Stock UIKit controls, gloss and gradient images, Helvetica Neue.
+- `UI/` — four tabs (Home, Search, Library, Settings), modal player, queue, lyrics, downloads.
+- `Support/waIOS5Compat.h` — subscripts, alignment enums, and `@YES` boxing the 5.1 SDK does not provide.
+- `Vendor/` — OrigamiEngine (MRC), libFLAC 1.4.3, quirc, mbedTLS 2.28.
 
 ## Playback
 
-`waDZAPI` resolves a track token, asks `media.deezer.com/v1/get_url` for the
-highest format the account grants, and wraps the signed CDN URL in
-`deezer://stream/<id>.<ext>?u=...`. `HTTPSource` fetches it, decrypts
-BF_CBC_STRIPE in place with one persistent Blowfish context, and writes a
-plain-PCM-able cache. Seeking reuses that cache through HTTP range requests.
+`waDZAPI` resolves a track token, asks `media.deezer.com/v1/get_url` for the highest format the account grants, and wraps the signed CDN URL as `deezer://stream/<id>.<ext>?u=...`. `HTTPSource` fetches it, decrypts BF_CBC_STRIPE in place, and writes a cache the decoder can seek. Hosts the iOS 5.1 stack cannot negotiate go through `waTLS`.
 
-Quality is probed against the live account at login: FLAC first, then 320,
-then 128. The preference can never exceed what the probe allows.
+Quality is probed at login: FLAC, then 320, then 128. The preference cannot exceed what the probe allows.
 
-## Tests in the app
+## Tests
 
-There is no test target on iOS 5. Build with `make` and run on the device.
+There is no test target. Build with `make` and run on the device. Log: `Documents/wave.log`, then Caches, then `/tmp/wave.log`.

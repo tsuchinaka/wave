@@ -1,91 +1,66 @@
-# SDK Reference — iPhoneOS7.1.sdk (+ fallback 6.1)
+# SDK Reference — iPhoneOS5.1.sdk
 
-> Build SDK: `/home/main/theos/sdks/iPhoneOS7.1.sdk` (1.2G, `iphoneos7.1`, Deployment 7.1, Max 7.1.99) con `TARGET := iphone:clang:7.1:6.1` (deployment 6.1, binario único 6.1–7.x). Fallback conservado: `/home/main/theos/sdks/iPhoneOS6.1.sdk` (515M).
-> Verificado con `du -sh` + `cat SDKSettings.plist | strings` + `ls Frameworks`. Fuente: `EachAndOther/Legacy-iOS-SDKs`.
-
-## 1. SDKSettings.plist (7.1 = build)
-
-` /home/main/theos/sdks/iPhoneOS7.1.sdk/SDKSettings.plist`
+Build y deployment son el mismo SDK. `Makefile:1`:
 
 ```
-CanonicalName: iphoneos7.1
-Version: 7.1
-DisplayName: iOS 7.1
-MaximumDeploymentTarget: 7.1.99
-IPHONEOS_DEPLOYMENT_TARGET: 7.1 (default) → proyecto fuerza 6.1 vía TARGET
+TARGET := iphone:clang:5.1:5.1
+ARCHS = armv7
+```
+
+Ruta: `/home/main/theos/sdks/iPhoneOS5.1.sdk` (338M). No hay SDK 6.1 ni 7.1 en `sdks/` de esta máquina. No documentar un fallback que no está instalado.
+
+## SDKSettings.plist
+
+`/home/main/theos/sdks/iPhoneOS5.1.sdk/SDKSettings.plist`
+
+```
+CanonicalName: iphoneos5.1
+Version: 5.1
+DisplayName: iOS 5.1
+IsBaseSDK: YES
+MaximumDeploymentTarget: 5.1.99
+IPHONEOS_DEPLOYMENT_TARGET: 5.1
 PLATFORM_NAME: iphoneos
-SUPPORTED_DEVICE_FAMILIES: 1 (iPhone), 2 (iPad)
-ARCHS: armv7 armv7s (arm64 aún no default en 7.1)
+SUPPORTED_DEVICE_FAMILIES: 1, 2
 CODE_SIGNING_REQUIRED: YES
 ```
 
-Fallback 6.1 (solo referencia):
-```
-CanonicalName: iphoneos6.1, Version: 6.1, MaximumDeploymentTarget: 6.1.99, IPHONEOS_DEPLOYMENT_TARGET: 6.1
-```
+Familia 1 es iPhone, 2 es iPad. El binario de wave es armv7. Eso cubre iPhone 3GS, 4 y 4s, y el iPad de esa generación. No hay armv7s ni arm64 en el `Makefile`. `./deploy.sh --arch` puede pasar otro `ARCHS` a make; el default del proyecto es armv7.
 
-## 2. Estructura de directorios
+## Layout útil
 
 ```
-iPhoneOS7.1.sdk/
-├── SDKSettings.plist
-├── Entitlements.plist
-├── ResourceRules.plist
-├── Developer/
-└── System/
-│   └── Library/
-│       ├── Frameworks/           → 51+ públicos (UIKit, AVFoundation, etc.)
-│       ├── PrivateFrameworks/    → 200+ privados
-│       └── ...
-└── usr/
-    ├── include/                  → headers C/ObjC (objc/runtime.h, Availability.h, dispatch/, etc.)
-    ├── lib/                      → dylibs (reparar symlinks si aparecen 0 bytes: ver §4)
-    └── ...
-
-iPhoneOS6.1.sdk/ (fallback, misma estructura, sin APIs 7+ como barTintColor/edgesForExtendedLayout)
+iPhoneOS5.1.sdk/
+  SDKSettings.plist
+  System/Library/Frameworks/          46 públicos
+  System/Library/PrivateFrameworks/   170
+  usr/include/
+  usr/lib/
 ```
 
-## 3. Directorio usr/include (extracto)
-
-`ls iPhoneOS7.1.sdk/usr/include | head`
+Validar:
 
 ```
-aio.h, alloca.h, architecture/, arm/, arpa/, asl.h, assert.h, Availability.h,
-AvailabilityInternal.h, AvailabilityMacros.h, Block.h, bsm/, bzlib.h, c++/,
-CommonCrypto/, complex.h, dispatch/, dlfcn.h, dns.h, objc/{objc.h,runtime.h,message.h}, ...
+ls /home/main/theos/sdks/
+du -sh /home/main/theos/sdks/iPhoneOS5.1.sdk
+ls /home/main/theos/sdks/iPhoneOS5.1.sdk/System/Library/Frameworks | wc -l
 ```
 
-→ Necesario para `wave_CFLAGS = -fobjc-arc`.
+Si `sdks/` no contiene `iPhoneOS5.1.sdk`, el build no tiene SDK. Reinstalar desde los Legacy iOS SDKs el árbol `iPhoneOS5.1.sdk` y copiarlo a `/home/main/theos/sdks/`. No sustituir por 6.1 o 7.1: el código usa el shim de `Support/waIOS5Compat.h` y evita APIs posteriores.
 
-## 4. Verificación
+## Qué no trae este SDK
 
-```bash
-ls /home/main/theos/sdks/                     # → iPhoneOS7.1.sdk iPhoneOS6.1.sdk
-du -sh /home/main/theos/sdks/iPhoneOS7.1.sdk  # → 1.2G
-du -sh /home/main/theos/sdks/iPhoneOS6.1.sdk  # → 515M
-cat /home/main/theos/sdks/iPhoneOS7.1.sdk/SDKSettings.plist | strings | grep CanonicalName # → iphoneos7.1
-ls System/Library/Frameworks | wc -w          # → 51+
-ls System/Library/PrivateFrameworks | wc -w   # → 200+
-# Si usr/lib tiene dylibs a 0 bytes (clon sparse roto):
-find /home/main/theos/sdks/iPhoneOS7.1.sdk/usr/lib -size 0 -type f | head
-```
+Comprobado contra los headers:
 
-Si falta, reinstalar:
+- No `UICollectionView`, `UIRefreshControl`, `UIActivityViewController`
+- No `UIAlertController` (sí `UIAlertView` y `UIActionSheet`)
+- No `WKWebView` (sí `UIWebView`)
+- No `UIStackView`, `UIVisualEffectView`, `NSLayoutAnchor`
+- No `NSLayoutConstraint.h` en UIKit
+- No `NSURLSession` (sí `NSURLConnection.h`)
 
-```bash
-rm -rf /tmp/Legacy-iOS-SDKs
-git clone --depth 1 --filter=blob:none --sparse https://github.com/EachAndOther/Legacy-iOS-SDKs.git /tmp/Legacy-iOS-SDKs
-git -C /tmp/Legacy-iOS-SDKs sparse-checkout set iPhoneOS6.1.sdk iPhoneOS7.1.sdk
-cp -a /tmp/Legacy-iOS-SDKs/iPhoneOS6.1.sdk /home/main/theos/sdks/
-cp -a /tmp/Legacy-iOS-SDKs/iPhoneOS7.1.sdk /home/main/theos/sdks/
-# Si los dylibs siguen a 0, re-crear symlinks: ver script de reparación en historial
-```
+`UIStepper`, `UIPageViewController`, `UIAppearance`, `UIDocument` y `UIStoryboard` sí están. Wave no usa storyboards: la UI se arma en código.
 
-## 5. Relación con el proyecto wave
+## Info.plist del proyecto
 
-- `Makefile:1` `TARGET := iphone:clang:7.1:6.1` + `ARCHS = armv7 armv7s` → compila contra 7.1 pero corre en 6.1+.
-- `wave_FRAMEWORKS = UIKit CoreGraphics ...` → paths:
-  - `System/Library/Frameworks/UIKit.framework/Headers/UIKit.h` (7.1 incluye `barTintColor`, `edgesForExtendedLayout`, `NSShadow` etc.)
-- Compat: todo lo iOS 7+ se guarda con `+[waTheme isModernSystem]` + `respondsToSelector:NSSelectorFromString(@"setBarTintColor:")` + KVC (ver `waTheme.m:60-96`, `waAppDelegate.m:122`). En iOS 6 ese código nunca corre.
-- No añadir `SDK` manualmente a `CFLAGS`; Theos lo resuelve vía `$THEOS/sdks/`.
-- UI unificada: `translucent=NO` + `barTintColor` + `UIRectEdgeNone` + `automaticallyAdjustsScrollViewInsets=NO` + `AlwaysOriginal` imágenes (ver `AGENTS.md §4`).
+`Resources/Info.plist:79` fija `MinimumOSVersion` en `5.1`. `CFBundleShortVersionString` está en `0.3.0`. La versión que empaqueta Theos es `control:3` (`0.3.54` en el árbol actual). No asumir que coinciden.
