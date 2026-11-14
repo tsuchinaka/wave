@@ -29,7 +29,7 @@ fi
 umask 022
 
 export THEOS="${THEOS:-/home/main/theos}"
-export THEOS_DEVICE_IP="192.168.1.8"
+export THEOS_DEVICE_IP="192.168.0.7"
 export THEOS_DEVICE_USER="root"
 export SSHPASS="alpine"
 

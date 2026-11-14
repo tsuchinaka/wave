@@ -1,8 +1,8 @@
 Package: com.bytebox.wave
 Name: wave
-Version: 0.1.28
+Version: 0.3.54
 Architecture: iphoneos-arm
-Description: An awesome application!
+Description: Deezer client for iOS 5.1
 Maintainer: tsu
 Author: tsu
 Section: Utilities

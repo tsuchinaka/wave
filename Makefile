@@ -1,34 +1,48 @@
-TARGET := iphone:clang:7.1:7.0
-ARCHS = armv7 armv7s
-# Release schema: without this, this Theos variant forces DEBUG (-O0, no
-# strip). -Os + strip is a large win on A4/A5 devices (DSP, JSON, image
-# decode) and halves the binary that has to page in from disk.
+TARGET := iphone:clang:5.1:5.1
+ARCHS = armv7
 FINALPACKAGE = 1
-# Keep legacy Theos builds bounded; very high parallelism can race while
-# creating per-architecture object directories on this toolchain.
 MAKEFLAGS += -j4
 INSTALL_TARGET_PROCESSES = wave
-THEOS_DEVICE_IP = 192.168.1.8
-THEOS_DEVICE_USER = root
 
 include $(THEOS)/makefiles/common.mk
 
 APPLICATION_NAME = wave
 
-wave_FILES = main.m waAppDelegate.m Controllers/waHomeViewController.m Controllers/waListViewController.m Controllers/waListViewController+SearchData.m Controllers/waLibraryViewController.m Controllers/waMediaResultsViewController.m Controllers/waSettingsViewController.m Controllers/waStorageViewController.m Controllers/waDeezerLoginViewController.m Controllers/waLogsViewController.m Controllers/waMediaDetailViewController.m Controllers/waProfileViewController.m Controllers/waPlayerViewController.m Controllers/waLyricsViewController.m Controllers/waLikedSongsViewController.m Controllers/waDownloadedSongsViewController.m Controllers/waDownloadedAlbumsViewController.m Controllers/waDownloadedAlbumDetailViewController.m Controllers/waThemeViewController.m Controllers/waEQViewController.m Controllers/waPlaylistViewController.m Controllers/waQueueViewController.m Views/waPlaceholder.m Views/waArtworkCell.m Views/waSegmentedControl.m Views/waMediaInfoCell.m Views/waCatalogInfoCard.m Views/waCatalogTrackCell.m Views/waCatalogSectionHeaderView.m Views/waAction.m Views/waActions.m Views/waMediaActionSheet.m Views/waHomeCardCell.m Views/waHomeSectionView.m Views/waHomeSectionCell.m Views/waEmptyView.m Views/waSearchCells.m Views/waSettingsCell.m Models/waMediaItem.m Models/waPreferences.m Models/waSong.m Models/waAlbum.m Models/waArtist.m Models/waPlaylist.m Models/waDownload.m Services/waAPIClient.m Services/waDeezerClient.m Services/waDeezerClient+Playlists.m Services/waDownloadManager.m Services/waDownloadStats.m Services/waAudioPlayer.m Services/waAudioPlayer+Queue.m Services/waAudioPlayer+Engine.m Services/waImageLoader.m Services/waKeychainStore.m Services/waTheme.m Services/waLastFMClient.m Services/waRPCClient.m Services/waDebugLog.m Audio/waAudioEngine.m Audio/waPCMTrack.m Audio/waPCMMixer.m Audio/waEqualizer.m Audio/waCompressor.m Vendor/OrigamiEngine/ORGMAudioUnit.m Vendor/OrigamiEngine/ORGMInputUnit.m Vendor/OrigamiEngine/ORGMPluginManager.m Vendor/OrigamiEngine/ORGMQueues.m Vendor/OrigamiEngine/Plugins/CoreAudioDecoder.m Vendor/OrigamiEngine/Plugins/CueSheet.m Vendor/OrigamiEngine/Plugins/CueSheetContainer.m Vendor/OrigamiEngine/Plugins/CueSheetDecoder.m Vendor/OrigamiEngine/Plugins/CueSheetTrack.m Vendor/OrigamiEngine/Plugins/FileSource.m Vendor/OrigamiEngine/Plugins/HTTPSource.m Vendor/OrigamiEngine/Plugins/M3uContainer.m Vendor/OrigamiEngine/Plugins/FlacDecoder.m
-wave_FRAMEWORKS = UIKit CoreGraphics CoreFoundation CoreVideo CoreMedia AVFoundation AudioToolbox MediaPlayer Security ImageIO QuartzCore
-wave_FILES += Controllers/waDownloadsViewController.m Controllers/waTrackListViewController.m Controllers/waQRScannerViewController.m
-wave_FILES += Services/waDeezerStreamClient.m Services/waDeezerBlowfish.c
-wave_FILES += Vendor/quirc/decode.c Vendor/quirc/identify.c Vendor/quirc/quirc.c Vendor/quirc/version_db.c
-wave_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -IVendor -IVendor/OrigamiEngine -IVendor/OrigamiEngine/Plugins
+CORE_FILES = Core/waModel.m Core/waCrypto.m Core/waAudioProbe.m Core/waDZAPI.m Core/waSession.m \
+             Core/waDownloader.m Core/waImageCache.m Core/waLog.m Core/waAudioCore.m Core/waPlayer.m Core/waTLS.m \
+             Core/waLyrics.m Core/waLastFM.m
+
+SKIN_FILES = Skin/waSkin.m Skin/waCell.m Skin/waTileView.m Skin/waCarouselView.m Skin/waCoverView.m Skin/waLyricStage.m
+
+UI_FILES = UI/waTableController.m UI/waRootController.m UI/waAppDelegate.m \
+           UI/waHomeController.m UI/waSearchController.m UI/waDetailController.m UI/waLibraryController.m \
+           UI/waChartsController.m UI/waRadioController.m UI/waGenresController.m UI/waDiscographyController.m UI/waDownloadsController.m \
+           UI/waLoginController.m UI/waProfileController.m UI/waPlayerController.m UI/waQueueController.m \
+           UI/waLyricsController.m UI/waSettingsController.m UI/waStorageController.m UI/waEQController.m \
+           UI/waLogsController.m UI/waPlaylistEditController.m UI/waAboutController.m
+
+VENDOR_FILES = Vendor/OrigamiEngine/ORGMAudioUnit.m Vendor/OrigamiEngine/ORGMQueues.m \
+               Vendor/OrigamiEngine/ORGMInputUnit.m Vendor/OrigamiEngine/ORGMPluginManager.m \
+               Vendor/OrigamiEngine/Plugins/FileSource.m Vendor/OrigamiEngine/Plugins/HTTPSource.m \
+               Vendor/OrigamiEngine/Plugins/CoreAudioDecoder.m Vendor/OrigamiEngine/Plugins/FlacDecoder.m \
+               Vendor/OrigamiEngine/Plugins/M3uContainer.m Vendor/OrigamiEngine/Plugins/CueSheetContainer.m \
+               Vendor/OrigamiEngine/Plugins/CueSheetDecoder.m Vendor/OrigamiEngine/Plugins/CueSheet.m \
+               Vendor/OrigamiEngine/Plugins/CueSheetTrack.m \
+               Vendor/quirc/decode.c Vendor/quirc/identify.c Vendor/quirc/quirc.c Vendor/quirc/version_db.c
+
+wave_FILES = main.m $(CORE_FILES) $(SKIN_FILES) $(UI_FILES) $(VENDOR_FILES) $(wildcard Vendor/mbedtls/library/*.c) Support/waIOS5Compat.m
+
+wave_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation AudioToolbox MediaPlayer Security \
+                  ImageIO CoreMedia CoreVideo SystemConfiguration CoreText
+wave_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -include Support/waIOS5Compat.h -ISupport -ICore -ISkin -IUI -IVendor -IVendor/OrigamiEngine -IVendor/OrigamiEngine/Plugins -IVendor/mbedtls/include -IVendor/mbedtls/library
 wave_LDFLAGS = -F$(THEOS_PROJECT_DIR)/Vendor -framework FLAC
 
 include $(THEOS_MAKE_PATH)/application.mk
 
-# OrigamiEngine is legacy MRC code; keep the application and wrapper ARC-safe.
+# OrigamiEngine is legacy MRC.
 $(foreach f,$(filter Vendor/OrigamiEngine/%,$(wave_FILES)),$(eval $(f)_CFLAGS += -fno-objc-arc))
 
-# Hot DSP paths: -O3 + NEON. The EQ/compressor numerics were validated with
-# the host response harness; FLAC/PCM loop code is pure C with no FP state
-# that -O3 could reassociate unsafely.
-$(foreach f,Audio/waEqualizer.m Audio/waCompressor.m Audio/waPCMTrack.m Audio/waPCMMixer.m Vendor/OrigamiEngine/Plugins/FlacDecoder.m,$(eval $(f)_CFLAGS += -O3 -mfpu=neon -mfloat-abi=softfp))
+# Hot decode path. No NEON: the iPhone 3GS has no NEON unit and it is a
+# supported iOS 5.1 device.
+$(foreach f,Core/waAudioCore.m Core/waCrypto.m Vendor/OrigamiEngine/Plugins/FlacDecoder.m,$(eval $(f)_CFLAGS += -O3))
+$(foreach f,$(wildcard Vendor/mbedtls/library/*.c),$(eval $(f)_CFLAGS += -O2))

@@ -22,9 +22,8 @@
 // THE SOFTWARE.
 
 #import "HTTPSource.h"
-#import "../../../Models/waPreferences.h"
-#import "../../../Services/waDebugLog.h"
-#import "../../../Services/waDeezerBlowfish.h"
+#import "../../../Core/waCrypto.h"
+#import "../../../Core/waLog.h"
 
 static NSString *waStreamCacheDirectory(void) {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
@@ -32,7 +31,8 @@ static NSString *waStreamCacheDirectory(void) {
 }
 
 static unsigned long long waStreamCacheLimitBytes(void) {
-    NSUInteger configured = [waPreferences sharedPreferences].cacheSizeMB;
+    NSInteger configured = [[NSUserDefaults standardUserDefaults] integerForKey:@"wave.cacheSizeMB"];
+    if (configured <= 0) configured = 512;
     unsigned long long total = (unsigned long long)MIN((NSUInteger)1024, configured) * 1024ULL * 1024ULL;
     // Shared budget with artwork (see waImageDiskCacheLimitBytes): stream
     // takes 3/4, images 1/4, so the combined total respects the setting.
@@ -83,7 +83,7 @@ static void waTrimStreamCache(void) {
         total = total > size ? total - size : 0;
     }
 }
-@interface HTTPSource () <NSURLSessionDataDelegate> {
+@interface HTTPSource () <NSURLConnectionDataDelegate> {
     long _byteCount;
     long _bytesRead;
     long long _bytesExpected; // 0 = unknown (chunked / no Content-Length)
@@ -97,15 +97,14 @@ static void waTrimStreamCache(void) {
     volatile BOOL _downloadComplete;
     // Serverless Deezer decrypt (deezer:// URLs, BF_CBC_STRIPE).
     BOOL _deezerDecrypt;
-    unsigned char _deezerKey[16];
+    waCryptor *_deezerCryptor;
     long long _decryptOffset;
+    BOOL _resumeAttempt;
     NSMutableData *_decryptRemainder;
     NSURL *_sourceURL;
     dispatch_queue_t _writeQueue;
 }
-@property (retain, nonatomic) NSURLSession *session;
-@property (retain, nonatomic) NSURLSessionDataTask *dataTask;
-@property (retain, nonatomic) NSOperationQueue *sessionDelegateQueue;
+@property (retain, nonatomic) NSURLConnection *connection;
 @property (retain, nonatomic) NSMutableURLRequest *request;
 @property (retain, nonatomic) NSFileHandle *fileHandle;
 @property (copy, nonatomic) NSString *cachePath;
@@ -142,12 +141,17 @@ const NSTimeInterval readTimeout = 1.0;
 }
 
 - (void)wa_startDataTaskOnNetworkThread {
-    [_dataTask resume];
+    [_connection cancel];
+    [_connection release];
+    _connection = [[NSURLConnection alloc] initWithRequest:_request delegate:self startImmediately:NO];
+    [_connection scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+    [_connection start];
 }
 
 - (void)dealloc {
     [self close];
     if (_downloadingSemaphore) { dispatch_release(_downloadingSemaphore); _downloadingSemaphore = NULL; }
+    if (_deezerCryptor) { waCryptorFree(_deezerCryptor); _deezerCryptor = NULL; }
     [_decryptRemainder release];
     _decryptRemainder = nil;
     [_sourceURL release];
@@ -155,9 +159,9 @@ const NSTimeInterval readTimeout = 1.0;
     [_fileHandle closeFile];
     [_fileHandle release];
     [_cachePath release];
-    [_dataTask release];
-    [_session release];
-    [_sessionDelegateQueue release];
+    [_connection cancel];
+    [_connection release];
+    _connection = nil;
     [_request release];
     if (_writeQueue) { dispatch_release(_writeQueue); _writeQueue = NULL; }
 
@@ -193,11 +197,11 @@ const NSTimeInterval readTimeout = 1.0;
     NSURL *fetchURL = url;
     _deezerDecrypt = NO;
     _decryptOffset = 0;
+    if (_deezerCryptor) { waCryptorFree(_deezerCryptor); _deezerCryptor = NULL; }
     [_decryptRemainder release];
     _decryptRemainder = [[NSMutableData alloc] init];
     [_sourceURL release];
     _sourceURL = nil;
-    memset(_deezerKey, 0, sizeof(_deezerKey));
     if ([[url scheme] isEqualToString:@"deezer"]) {
         // deezer://stream/<rawID>.mp3|flac?q=<0|1|2>&u=<escaped https CDN>
         _sourceURL = [url copy];
@@ -210,21 +214,15 @@ const NSTimeInterval readTimeout = 1.0;
         NSURL *cdnURL = [NSURL URLWithString:cdnString];
         NSString *rawID = [[url lastPathComponent] stringByDeletingPathExtension];
         if (!cdnURL || !rawID.length) return NO;
-        waDeezerDeriveKey([rawID UTF8String], _deezerKey);
+        _deezerCryptor = waCryptorCreate([rawID UTF8String]);
+        if (!_deezerCryptor) return NO;
         _deezerDecrypt = YES;
         fetchURL = cdnURL;
-        [[waDebugLog sharedLog] log:@"HTTPSource deezer decrypt on for track %@", rawID];
+        [[waLog shared] log:@"HTTPSource deezer decrypt on for track %@", rawID];
     }
     self.request = [NSMutableURLRequest requestWithURL:fetchURL];
     [self.request addValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
     [self.request setValue:@"Wave/1.0" forHTTPHeaderField:@"User-Agent"];
-
-    self.sessionDelegateQueue = [[NSOperationQueue alloc] init];
-    self.sessionDelegateQueue.maxConcurrentOperationCount = 1;
-    self.session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]
-                                                  delegate:self
-                                             delegateQueue:self.sessionDelegateQueue];
-    self.dataTask = [self.session dataTaskWithRequest:_request];
 
     _cancelled = NO;
     _downloadComplete = NO;
@@ -241,6 +239,23 @@ const NSTimeInterval readTimeout = 1.0;
                         (unsigned long)[[url absoluteString] hash],
                         url.pathExtension]];
 
+    // Resume a decrypted cache instead of rewriting it from zero when the
+    // decoder seeks backwards on a track it already started.
+    _resumeAttempt = NO;
+    if (_deezerDecrypt && self.cachePath.length) {
+        NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:self.cachePath error:NULL];
+        unsigned long long size = [attributes fileSize];
+        unsigned long long aligned = size - (size % WA_STRIPE);
+        if (aligned >= WA_STRIPE) {
+            NSFileHandle *trim = [NSFileHandle fileHandleForWritingAtPath:self.cachePath];
+            @try { [trim truncateFileAtOffset:aligned]; [trim closeFile]; } @catch (NSException *e) { (void)e; }
+            _byteCount = (long)aligned;
+            _decryptOffset = (long long)aligned;
+            _resumeAttempt = YES;
+            [self.request setValue:[NSString stringWithFormat:@"bytes=%llu-", aligned] forHTTPHeaderField:@"Range"];
+        }
+    }
+
     // Start the task away from the decoder's blocked thread; delegate callbacks
     // are delivered on the per-source session queue.
     [self performSelector:@selector(wa_startDataTaskOnNetworkThread)
@@ -253,7 +268,7 @@ const NSTimeInterval readTimeout = 1.0;
                                                              (int64_t)(waHTTPSourceOpenTimeout * NSEC_PER_SEC)));
     if (waitResult != 0) {
         _connectionDidFail = YES;
-        [_dataTask cancel];
+        [_connection cancel];
         return NO;
     }
 
@@ -314,7 +329,7 @@ const NSTimeInterval readTimeout = 1.0;
         if (_downloadComplete) break;
         if ([NSDate timeIntervalSinceReferenceDate] >= deadline) {
             _connectionDidFail = YES;
-            [_dataTask cancel];
+            [_connection cancel];
             return 0;
         }
         _bytesWaitingFromCache = target;
@@ -334,8 +349,8 @@ const NSTimeInterval readTimeout = 1.0;
         long long readOffset = _bytesRead;
         dispatch_sync([HTTPSource cachingQueue], ^{
             @synchronized(fileHandle) {
-                @try { [fileHandle seekToFileOffset:readOffset]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource read seek failed: %@", e.reason]; data = [NSData data]; return; }
-                @try { data = [fileHandle readDataOfLength:amount]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource read failed: %@", e.reason]; data = [NSData data]; }
+                @try { [fileHandle seekToFileOffset:readOffset]; } @catch (NSException *e) { [[waLog shared] log:@"HTTPSource read seek failed: %@", e.reason]; data = [NSData data]; return; }
+                @try { data = [fileHandle readDataOfLength:amount]; } @catch (NSException *e) { [[waLog shared] log:@"HTTPSource read failed: %@", e.reason]; data = [NSData data]; }
             }
         });
         [fileHandle release];
@@ -350,13 +365,12 @@ const NSTimeInterval readTimeout = 1.0;
 
 - (void)close {
     _cancelled = YES;
-    [_dataTask cancel];
-    [_session invalidateAndCancel];
+    [_connection cancel];
     if (_downloadingSemaphore) dispatch_semaphore_signal(_downloadingSemaphore);
     NSFileHandle *fileHandle = [self.fileHandle retain];
     self.fileHandle = nil;
     // Wait for queued writes before closing or deleting the file. This keeps
-    // a late NSURLSession callback from writing into a closed handle.
+    // a late NSURLConnection callback from writing into a closed handle.
     if (fileHandle) {
         dispatch_sync(_writeQueue, ^{
             [fileHandle synchronizeFile];
@@ -449,25 +463,37 @@ const NSTimeInterval readTimeout = 1.0;
     }
 }
 
-#pragma mark - NSURLSession delegate
+#pragma mark - NSURLConnection delegate
 
-- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler {
-    (void)session;
-    (void)dataTask;
+- (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
+    (void)connection;
     if ([response isKindOfClass:[NSHTTPURLResponse class]] &&
         [(NSHTTPURLResponse *)response statusCode] >= 400) {
         // Surface the server's answer: a failing lossless endpoint here is
         // what kills crossfade preparation silently otherwise.
-        [[waDebugLog sharedLog] log:@"HTTPSource open rejected: HTTP %ld for %@",
+        [[waLog shared] log:@"HTTPSource open rejected: HTTP %ld for %@",
             (long)[(NSHTTPURLResponse *)response statusCode], [_request.URL absoluteString] ?: @""];
         _invalidResponse = YES;
         _connectionDidFail = YES;
-        [_dataTask cancel];
+        [_connection cancel];
         dispatch_semaphore_signal(_downloadingSemaphore);
-        if (completionHandler) completionHandler(NSURLSessionResponseCancel);
         return;
     }
-    _bytesExpected = response.expectedContentLength > 0 ? response.expectedContentLength : 0;
+    if (_resumeAttempt) {
+        NSInteger code = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        if (code != 206) {
+            NSFileHandle *reset = [NSFileHandle fileHandleForWritingAtPath:self.cachePath];
+            @try { [reset truncateFileAtOffset:0]; [reset closeFile]; } @catch (NSException *e) { (void)e; }
+            _byteCount = 0;
+            _decryptOffset = 0;
+        }
+        _resumeAttempt = NO;
+    }
+    if (response.expectedContentLength > 0) {
+        _bytesExpected = (long long)_byteCount + response.expectedContentLength;
+    } else {
+        _bytesExpected = 0;
+    }
     dispatch_semaphore_signal(_downloadingSemaphore);
 
     // Resume check only applies when the total is known. With chunked
@@ -475,17 +501,15 @@ const NSTimeInterval readTimeout = 1.0;
     // stored above as 0 = unknown.
     @try {
         if (_bytesExpected > 0 && [_fileHandle seekToEndOfFile] == _bytesExpected) {
-            [_dataTask cancel];
+            [_connection cancel];
             _byteCount = (long)_bytesExpected;
             _downloadComplete = YES;
         }
-    } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource seekToEnd failed: %@", e.reason]; }
-    if (completionHandler) completionHandler(NSURLSessionResponseAllow);
+    } @catch (NSException *e) { [[waLog shared] log:@"HTTPSource seekToEnd failed: %@", e.reason]; }
 }
 
-- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
-    (void)session;
-    (void)dataTask;
+- (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data {
+    (void)connection;
     if (data && _fileHandle) {
         // Backend .flac streams arrive in the clear; deezer:// payloads are
         // still encrypted on the wire here (decrypt happens below), so the
@@ -493,10 +517,10 @@ const NSTimeInterval readTimeout = 1.0;
         if (!_deezerDecrypt && [[[self url] pathExtension].lowercaseString isEqualToString:@"flac"] && _byteCount == 0) {
             const unsigned char *bytes = data.bytes;
             if (data.length < 4 || bytes[0] != 'f' || bytes[1] != 'L' || bytes[2] != 'a' || bytes[3] != 'C') {
-                [[waDebugLog sharedLog] log:@"HTTPSource: non-FLAC payload on .flac stream (%@)", [_request.URL absoluteString] ?: @""];
+                [[waLog shared] log:@"HTTPSource: non-FLAC payload on .flac stream (%@)", [_request.URL absoluteString] ?: @""];
                 _invalidResponse = YES;
                 _connectionDidFail = YES;
-                [_dataTask cancel];
+                [_connection cancel];
                 dispatch_semaphore_signal(_downloadingSemaphore);
                 return;
             }
@@ -504,32 +528,40 @@ const NSTimeInterval readTimeout = 1.0;
         NSFileHandle *fileHandle = [_fileHandle retain];
         NSData *payload = data;
         if (_deezerDecrypt) {
-            [_decryptRemainder appendData:data];
-            NSMutableData *plain = [NSMutableData data];
-            while ([_decryptRemainder length] >= 2048) {
-                unsigned char chunk[2048];
-                [_decryptRemainder getBytes:chunk range:NSMakeRange(0, 2048)];
-                unsigned long chunkIndex = (unsigned long)(_decryptOffset / 2048);
-                if (waDeezerDecryptChunk(_deezerKey, chunkIndex, chunk, 2048) != 0) {
-                    [[waDebugLog sharedLog] log:@"HTTPSource deezer decrypt failed at chunk %lu", chunkIndex];
-                    _invalidResponse = YES;
-                    _connectionDidFail = YES;
-                    [_dataTask cancel];
-                    dispatch_semaphore_signal(_downloadingSemaphore);
-                    [fileHandle release];
-                    return;
-                }
-                [plain appendBytes:chunk length:2048];
-                [_decryptRemainder replaceBytesInRange:NSMakeRange(0, 2048) withBytes:NULL length:0];
-                _decryptOffset += 2048;
+            if (!_deezerCryptor) {
+                _invalidResponse = YES;
+                _connectionDidFail = YES;
+                [_connection cancel];
+                dispatch_semaphore_signal(_downloadingSemaphore);
+                [fileHandle release];
+                return;
             }
-            if (![plain length]) { [fileHandle release]; return; }
-            payload = plain;
+            [_decryptRemainder appendData:data];
+            unsigned char *bytes = [_decryptRemainder mutableBytes];
+            unsigned long index = (unsigned long)(_decryptOffset / WA_STRIPE);
+            int headerOK = 1;
+            long consumed = waCryptorConsume(_deezerCryptor, &index, bytes, [_decryptRemainder length],
+                                                   _decryptOffset == 0 ? &headerOK : NULL);
+            if (consumed < 0) {
+                [[waLog shared] log:@"HTTPSource deezer decrypt failed at chunk %lu%@",
+                    (unsigned long)(_decryptOffset / WA_STRIPE),
+                    headerOK ? @"" : @" (bad audio header)"];
+                _invalidResponse = YES;
+                _connectionDidFail = YES;
+                [_connection cancel];
+                dispatch_semaphore_signal(_downloadingSemaphore);
+                [fileHandle release];
+                return;
+            }
+            if (!consumed) { [fileHandle release]; return; }
+            payload = [NSData dataWithBytes:bytes length:(NSUInteger)consumed];
+            [_decryptRemainder replaceBytesInRange:NSMakeRange(0, (NSUInteger)consumed) withBytes:NULL length:0];
+            _decryptOffset += consumed;
         }
         dispatch_async(_writeQueue, ^{
             @synchronized(fileHandle) {
-                @try { [fileHandle seekToFileOffset:_byteCount]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource write seek failed: %@", e.reason]; [fileHandle release]; return; }
-                @try { [fileHandle writeData:payload]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource write failed: %@", e.reason]; [fileHandle release]; return; }
+                @try { [fileHandle seekToFileOffset:_byteCount]; } @catch (NSException *e) { [[waLog shared] log:@"HTTPSource write seek failed: %@", e.reason]; [fileHandle release]; return; }
+                @try { [fileHandle writeData:payload]; } @catch (NSException *e) { [[waLog shared] log:@"HTTPSource write failed: %@", e.reason]; [fileHandle release]; return; }
             }
             _byteCount += payload.length;
             if (_byteCount >= _bytesWaitingFromCache) {
@@ -540,35 +572,39 @@ const NSTimeInterval readTimeout = 1.0;
     }
 }
 
-- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
-    (void)session;
-    (void)task;
-    if (error) {
-        dispatch_semaphore_signal(_downloadingSemaphore);
-        _connectionDidFail = YES;
-        return;
-    }
+- (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
+    (void)connection;
+    (void)error;
+    dispatch_semaphore_signal(_downloadingSemaphore);
+    _connectionDidFail = YES;
+}
+
+- (void)connectionDidFinishLoading:(NSURLConnection *)connection {
+    (void)connection;
     if (_deezerDecrypt && [_decryptRemainder length]) {
         NSUInteger rest = [_decryptRemainder length];
-        unsigned char *buf = malloc(rest);
-        if (buf) {
-            [_decryptRemainder getBytes:buf length:rest];
-            unsigned long chunkIndex = (unsigned long)(_decryptOffset / 2048);
-            waDeezerDecryptChunk(_deezerKey, chunkIndex, buf, rest);
-            NSData *tail = [NSData dataWithBytes:buf length:rest];
-            free(buf);
-            NSFileHandle *fh = [_fileHandle retain];
-            dispatch_sync(_writeQueue, ^{
-                @synchronized(fh) {
-                    @try { [fh seekToFileOffset:_byteCount]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource tail seek failed: %@", e.reason]; return; }
-                    @try { [fh writeData:tail]; } @catch (NSException *e) { [[waDebugLog sharedLog] log:@"HTTPSource tail write failed: %@", e.reason]; return; }
-                }
-                _byteCount += tail.length;
-            });
-            [fh release];
-            _decryptOffset += rest;
+        unsigned char *buf = [_decryptRemainder mutableBytes];
+        unsigned long chunkIndex = (unsigned long)(_decryptOffset / WA_STRIPE);
+        if (!_deezerCryptor || waCryptorStripe(_deezerCryptor, chunkIndex, buf, rest) != 0) {
+            [[waLog shared] log:@"HTTPSource deezer decrypt failed at tail chunk %lu", chunkIndex];
+            _invalidResponse = YES;
+            _connectionDidFail = YES;
+            [_decryptRemainder setLength:0];
+            dispatch_semaphore_signal(_downloadingSemaphore);
+            return;
         }
+        NSData *tail = [NSData dataWithBytes:buf length:rest];
         [_decryptRemainder setLength:0];
+        NSFileHandle *fh = [_fileHandle retain];
+        dispatch_sync(_writeQueue, ^{
+            @synchronized(fh) {
+                @try { [fh seekToFileOffset:_byteCount]; } @catch (NSException *e) { [[waLog shared] log:@"HTTPSource tail seek failed: %@", e.reason]; return; }
+                @try { [fh writeData:tail]; } @catch (NSException *e) { [[waLog shared] log:@"HTTPSource tail write failed: %@", e.reason]; return; }
+            }
+            _byteCount += tail.length;
+        });
+        [fh release];
+        _decryptOffset += rest;
     }
     // Normal EOF: unblock any pending read and snap an unknown length to
     // the actual total so size/tell/seek stay consistent from here on.

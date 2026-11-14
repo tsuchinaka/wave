@@ -101,6 +101,7 @@ Implementado; validación en dispositivo pendiente:
 - [x] Search compacto: placeholder "Search Deezer", filtros y títulos con menor altura, y carruseles de Search ajustados al tamaño real de sus tarjetas; versión 0.1.23 desplegada.
 - [x] Crossfade "muerto" en 4s/5: no era regresión sino una cap de diseño (≤512 MB → crossfade forzado a 0, waAudioPlayer). Eliminada junto con la cap de calidad: crossfade es decisión del usuario en todos los dispositivos, con 45 s de antelación para preparar el decoder siguiente y el watchdog de stall como red de seguridad.
 - [x] Scrobbles a Last.fm "muertos": Now Playing funcionaba (HTTP 200) pero cero scrobbles en el log — la key `wa.lastfm.scrobbling` no existía en este install (boolForKey = NO) y el login no la activaba. Fix: login exitoso habilita scrobbling automáticamente (el switch de Settings sigue mandando después). Diagnóstico vía wave.log + plist del dispositivo.
+- [x] Last.fm en el cliente iOS 5.1: `Core/waLastFM` con `auth.getMobileSession`, `track.updateNowPlaying` y `track.scrobble` (50% o 4 min, mínimo 30s). Login enciende scrobbling. Botón del logo en Now Playing rojo si activo, gris si no. Fila Account + switch. `0.3.46`.
 
 ## Serverless Deezer directo (MP3-only) — 2026-09-06
 

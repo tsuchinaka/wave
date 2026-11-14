@@ -73,9 +73,11 @@
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>1.0</string>
+	<string>0.3.0</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.2</string>
+	<string>0.3.0</string>
+	<key>MinimumOSVersion</key>
+	<string>5.1</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIDeviceFamily</key>
@@ -103,10 +105,8 @@
 	<key>UIBackgroundModes</key>
 	<array><string>audio</string></array>
 	<key>UIStatusBarHidden</key>
-	<true/>
-	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
-	<key>UIAppFonts</key>
+		<key>UIAppFonts</key>
 	<array>
 		<string>wave-deezer-font/DeezerProduct-Regular.ttf</string>
 		<string>wave-deezer-font/DeezerProduct-Light.ttf</string>
