@@ -618,3 +618,13 @@ const NSTimeInterval readTimeout = 1.0;
 }
 
 @end
+
+// Storage screen. A cache file a decoder or the cast server still holds is not
+// safe to delete: the reader would lose its backing file mid-stream.
+NSArray *waActiveStreamCachePathList(void) {
+    NSArray *paths = nil;
+    @synchronized(waActiveStreamCachePaths()) {
+        paths = [waActiveStreamCachePaths() allObjects];
+    }
+    return [[paths copy] autorelease];
+}

@@ -433,6 +433,10 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
     });
 }
 
+- (void)clearMemory {
+    [self.memory removeAllObjects];
+}
+
 - (void)cancelRequestsForOwner:(id)owner {
     if (!owner) return;
     __weak waImageCache *weakSelf = self;

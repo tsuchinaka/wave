@@ -7,5 +7,6 @@
 - (void)loadImageAtURL:(NSString *)url size:(CGSize)size completion:(void (^)(UIImage *image))completion;
 - (void)loadImageAtURL:(NSString *)url size:(CGSize)size owner:(id)owner completion:(void (^)(UIImage *image))completion;
 - (void)cancelRequestsForOwner:(id)owner;
+- (void)clearMemory;
 - (NSString *)sourcePathForURL:(NSString *)url;
 @end
