@@ -5,5 +5,4 @@
 @interface waAudioProbe : NSObject
 + (double)bitrateKbpsFromMP3Data:(NSData *)data;
 + (BOOL)readFLACInfo:(NSData *)data bitrate:(double *)bitrate duration:(double *)duration;
-+ (double)bitrateKbpsForFile:(NSString *)path;
 @end

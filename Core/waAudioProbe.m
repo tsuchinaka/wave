@@ -68,19 +68,5 @@ static const int waMP3Rates[4] = {44100, 48000, 32000, 0};
     return NO;
 }
 
-+ (double)bitrateKbpsForFile:(NSString *)path {
-    if (!path.length) return 0.0;
-    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
-    if (!handle) return 0.0;
-    NSData *head = [handle readDataOfLength:256 * 1024];
-    [handle closeFile];
-    if (!head.length) return 0.0;
-    if (waSniffAudio(head.bytes, 4) == 2 || (head.length >= 4 && memcmp(head.bytes, "fLaC", 4) == 0)) {
-        double kbps = 0.0, seconds = 0.0;
-        if ([self readFLACInfo:head bitrate:&kbps duration:&seconds]) return kbps;
-        return 0.0;
-    }
-    return [self bitrateKbpsFromMP3Data:head];
-}
 
 @end

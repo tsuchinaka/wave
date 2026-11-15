@@ -24,12 +24,6 @@
 - (void)getPath:(NSString *)path
          params:(NSDictionary *)params
      completion:(void (^)(NSDictionary *json, NSError *error))completion;
-- (void)postPath:(NSString *)path
-          params:(NSDictionary *)params
-      completion:(void (^)(NSDictionary *json, NSError *error))completion;
-- (void)deletePath:(NSString *)path
-            params:(NSDictionary *)params
-        completion:(void (^)(NSDictionary *json, NSError *error))completion;
 
 // account bootstrap; also fills checkForm/sessionID/licenseToken
 - (void)loadUserData:(void (^)(NSDictionary *user, NSError *error))completion;

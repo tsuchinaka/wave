@@ -485,26 +485,7 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
     }];
 }
 
-- (unsigned long long)diskBytes {
-    unsigned long long total = 0;
-    NSString *dir = waImageDirectory();
-    NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL];
-    for (NSString *name in files) {
-        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:[dir stringByAppendingPathComponent:name] error:NULL];
-        total += [attrs fileSize];
-    }
-    return total;
-}
 
-- (void)clearMemory {
-    [self.memory removeAllObjects];
-}
 
-- (void)clearDisk {
-    [self.memory removeAllObjects];
-    NSString *dir = waImageDirectory();
-    [[NSFileManager defaultManager] removeItemAtPath:dir error:NULL];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
-}
 
 @end

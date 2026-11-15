@@ -180,13 +180,7 @@ static BOOL waPreviewURL(NSString *url) {
     [self requestPath:path method:@"GET" params:params completion:completion];
 }
 
-- (void)postPath:(NSString *)path params:(NSDictionary *)params completion:(void (^)(NSDictionary *, NSError *))completion {
-    [self requestPath:path method:@"POST" params:params completion:completion];
-}
 
-- (void)deletePath:(NSString *)path params:(NSDictionary *)params completion:(void (^)(NSDictionary *, NSError *))completion {
-    [self requestPath:path method:@"DELETE" params:params completion:completion];
-}
 
 - (BOOL)shouldCachePath:(NSString *)path method:(NSString *)method {
     if (![[method uppercaseString] isEqualToString:@"GET"]) return NO;

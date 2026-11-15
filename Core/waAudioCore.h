@@ -51,5 +51,4 @@ float waEQMagnitudeDB(const waEQCoeff *coeffs, float sampleRate, float frequency
 - (void)seekTo:(NSTimeInterval)time;
 - (void)setGains:(const float *)gains;
 - (void)setLimiterEnabled:(BOOL)enabled;
-- (void)fadeToVolume:(float)volume duration:(NSTimeInterval)duration completion:(void (^)(void))completion;
 @end
