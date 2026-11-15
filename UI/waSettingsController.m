@@ -5,6 +5,7 @@
 #import "waAboutController.h"
 #import "waSession.h"
 #import "waProfileController.h"
+#import "waLoginController.h"
 #import "waPlayer.h"
 #import "waLastFM.h"
 #import "waSkin.h"
@@ -292,7 +293,7 @@ static NSString * const waKeyDiscordRPC = @"wave.discordRPC";
             UITableViewCell *cell = [self valueCell:@"account"];
             cell.textLabel.text = @"Account";
             cell.detailTextLabel.text = @"Not Signed In";
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return cell;
         }
         if (row == 0) {
@@ -418,7 +419,10 @@ static NSString * const waKeyDiscordRPC = @"wave.discordRPC";
             return;
         }
         if (row == [self accountScrobbleRow]) return;
-        if (![waSession shared].authenticated) return;
+        if (![waSession shared].authenticated) {
+            [self.navigationController pushViewController:[[waLoginController alloc] init] animated:YES];
+            return;
+        }
         if (row == 1) [self showManage];
         else if (row == [self accountLogoutRow]) [self confirmLogout];
         return;
