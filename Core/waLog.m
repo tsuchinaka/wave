@@ -1,4 +1,7 @@
 #import "waLog.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 
 static NSString *waLogPath(void) {
     static NSString *path = nil;
@@ -23,6 +26,44 @@ static NSString *waLogPath(void) {
 @property (nonatomic, strong) NSMutableArray *entries;
 @property (nonatomic, assign) dispatch_queue_t queue;
 @end
+
+// One descriptor for the life of the process. Opening, seeking and closing a
+// handle per line was hundreds of flash operations per minute on the 3GS.
+static int waLogFD = -1;
+
+static int waLogDescriptor(void) {
+    if (waLogFD >= 0) return waLogFD;
+    const char *path = [waLogPath() fileSystemRepresentation];
+    if (!path) return -1;
+    waLogFD = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    return waLogFD;
+}
+
+static void waLogWriteLine(NSString *line) {
+    if (!line.length) return;
+    NSData *data = [[line stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data.length) return;
+    int fd = waLogDescriptor();
+    if (fd < 0) return;
+    const char *bytes = (const char *)data.bytes;
+    size_t left = (size_t)data.length;
+    while (left) {
+        ssize_t wrote = write(fd, bytes, left);
+        if (wrote < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            waLogFD = -1;
+            return;
+        }
+        bytes += wrote;
+        left -= (size_t)wrote;
+    }
+}
+
+static void waLogCloseDescriptor(void) {
+    if (waLogFD >= 0) close(waLogFD);
+    waLogFD = -1;
+}
 
 @implementation waLog
 
@@ -50,16 +91,7 @@ static NSString *waLogPath(void) {
     dispatch_async(self.queue, ^{
         [self.entries addObject:line];
         if (self.entries.count > 400) [self.entries removeObjectAtIndex:0];
-        NSData *data = [[line stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
-        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:waLogPath()];
-        if (!handle) [[NSFileManager defaultManager] createFileAtPath:waLogPath() contents:data attributes:nil];
-        else {
-            @try {
-                [handle seekToEndOfFile];
-                [handle writeData:data];
-                [handle closeFile];
-            } @catch (NSException *e) { (void)e; }
-        }
+        waLogWriteLine(line);
     });
 }
 
@@ -76,6 +108,7 @@ static NSString *waLogPath(void) {
 - (void)clear {
     dispatch_async(self.queue, ^{
         [self.entries removeAllObjects];
+        waLogCloseDescriptor();
         [[NSFileManager defaultManager] removeItemAtPath:waLogPath() error:NULL];
     });
 }
