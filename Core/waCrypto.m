@@ -8,10 +8,23 @@
 
 struct waCryptor {
     CCCryptorRef ref;
+    waCipher cipher;
+    uint8_t iv[16];
+    size_t ivLength;
+    size_t block;
 };
 
 static const char waSecret[16] = "g4el58wc0zvf9na1";
-static const uint8_t waIV[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+static const uint8_t waBlowfishIV[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+
+waCipher waCipherFromName(const char *name) {
+    if (!name || !name[0]) return waCipherBlowfishStripe;
+    if (strcasecmp(name, "BF_CBC_STRIPE") == 0) return waCipherBlowfishStripe;
+    if (strcasecmp(name, "AES_CTR") == 0) return waCipherAESCTR;
+    if (strcasecmp(name, "AES_CBC_STRIPE") == 0) return waCipherAESCBCStripe;
+    if (strcasecmp(name, "NONE") == 0) return waCipherNone;
+    return waCipherBlowfishStripe;
+}
 
 void waKeyForTrack(const char *trackID, uint8_t outKey[16]) {
     uint8_t digest[CC_MD5_DIGEST_LENGTH];
@@ -29,20 +42,67 @@ void waKeyForTrack(const char *trackID, uint8_t outKey[16]) {
     }
 }
 
-waCryptor *waCryptorCreate(const char *trackID) {
+static void waCipherParams(waCipher cipher, CCAlgorithm *algorithm, CCMode *mode, const uint8_t **iv, size_t *ivLength, size_t *block) {
+    switch (cipher) {
+        case waCipherAESCTR:
+            *algorithm = kCCAlgorithmAES128;
+            *mode = kCCModeCTR;
+            *iv = waBlowfishIV;
+            *ivLength = sizeof(waBlowfishIV);
+            *block = 16;
+            return;
+        case waCipherAESCBCStripe:
+            *algorithm = kCCAlgorithmAES128;
+            *mode = kCCModeCBC;
+            *iv = waBlowfishIV;
+            *ivLength = sizeof(waBlowfishIV);
+            *block = 16;
+            return;
+        case waCipherNone:
+        case waCipherBlowfishStripe:
+        default:
+            *algorithm = kCCAlgorithmBlowfish;
+            *mode = kCCModeCBC;
+            *iv = waBlowfishIV;
+            *ivLength = sizeof(waBlowfishIV);
+            *block = WA_BLOCK;
+            return;
+    }
+}
+
+waCryptor *waCryptorCreateCipher(const char *trackID, waCipher cipher) {
+    if (cipher == waCipherNone) {
+        waCryptor *plain = (waCryptor *)calloc(1, sizeof(*plain));
+        if (plain) plain->cipher = waCipherNone;
+        return plain;
+    }
     uint8_t key[16];
     waKeyForTrack(trackID, key);
+    CCAlgorithm algorithm;
+    CCMode mode;
+    const uint8_t *iv;
+    size_t ivLength, block;
+    waCipherParams(cipher, &algorithm, &mode, &iv, &ivLength, &block);
+
     CCCryptorRef ref = NULL;
-    if (CCCryptorCreate(kCCDecrypt, kCCAlgorithmBlowfish, 0, key, sizeof(key), waIV, &ref) != kCCSuccess || !ref) {
-        return NULL;
-    }
+    CCCryptorStatus status = CCCryptorCreateWithMode(kCCDecrypt, mode, algorithm, ccNoPadding, iv, key, sizeof(key), NULL, 0, 0, 0, &ref);
+    if (status != kCCSuccess || !ref) return NULL;
+
     waCryptor *c = (waCryptor *)calloc(1, sizeof(*c));
     if (!c) {
         CCCryptorRelease(ref);
         return NULL;
     }
     c->ref = ref;
+    c->cipher = cipher;
+    c->block = block;
+    c->ivLength = ivLength;
+    if (iv && ivLength) memcpy(c->iv, iv, ivLength);
     return c;
+}
+
+waCryptor *waCryptorCreate(const char *trackID) {
+    return waCryptorCreateCipher(trackID, waCipherBlowfishStripe);
 }
 
 void waCryptorFree(waCryptor *c) {
@@ -54,16 +114,17 @@ void waCryptorFree(waCryptor *c) {
 int waCryptorStripe(waCryptor *c, unsigned long index, uint8_t *data, size_t length) {
     if (!data || !length) return 0;
     if ((index % 3) != 0) return 0;
-    if (!c || !c->ref) return -1;
-    size_t aligned = length - (length % WA_BLOCK);
+    if (!c) return -1;
+    if (c->cipher == waCipherNone) return 0;
+    if (!c->ref) return -1;
+    size_t block = c->block ? c->block : WA_BLOCK;
+    size_t aligned = length - (length % block);
     if (!aligned) return 0;
     if (aligned > WA_STRIPE) return -1;
-    if (CCCryptorReset(c->ref, waIV) != kCCSuccess) return -1;
-    uint8_t scratch[WA_STRIPE];
+    if (CCCryptorReset(c->ref, c->iv) != kCCSuccess) return -1;
     size_t moved = 0;
-    CCCryptorStatus status = CCCryptorUpdate(c->ref, data, aligned, scratch, sizeof(scratch), &moved);
+    CCCryptorStatus status = CCCryptorUpdate(c->ref, data, aligned, data, aligned, &moved);
     if (status != kCCSuccess || moved != aligned) return -1;
-    memcpy(data, scratch, aligned);
     return 0;
 }
 

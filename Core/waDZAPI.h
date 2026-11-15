@@ -35,10 +35,11 @@
 - (void)loadUserData:(void (^)(NSDictionary *user, NSError *error))completion;
 
 // signed stream. quality is resolved by the caller; the completion reports the
-// format the account actually granted so the UI can stay honest.
+// format and cipher the account actually granted so the UI can stay honest
+// and the decryptor can pick the matching scheme.
 - (void)signedURLForTrackToken:(NSString *)trackToken
                        formats:(NSArray *)formats
-                    completion:(void (^)(NSString *url, NSString *format, NSError *error))completion;
+                    completion:(void (^)(NSString *url, NSString *format, NSString *cipher, NSError *error))completion;
 
 - (void)trackTokenForID:(NSString *)trackID completion:(void (^)(NSString *token, NSError *error))completion;
 // Authenticated token plus the id the CDN file is keyed with. FALLBACK is used

@@ -207,14 +207,18 @@ const NSTimeInterval readTimeout = 1.0;
         _sourceURL = [url copy];
         NSString *query = [url query] ?: @"";
         NSString *escapedCDN = nil;
+        NSString *cipherName = nil;
         for (NSString *pair in [query componentsSeparatedByString:@"&"]) {
-            if ([pair hasPrefix:@"u="]) { escapedCDN = [pair substringFromIndex:2]; break; }
+            if ([pair hasPrefix:@"u="]) escapedCDN = [pair substringFromIndex:2];
+            else if ([pair hasPrefix:@"c="]) cipherName = [pair substringFromIndex:2];
         }
         NSString *cdnString = [escapedCDN stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
         NSURL *cdnURL = [NSURL URLWithString:cdnString];
         NSString *rawID = [[url lastPathComponent] stringByDeletingPathExtension];
         if (!cdnURL || !rawID.length) return NO;
-        _deezerCryptor = waCryptorCreate([rawID UTF8String]);
+        // Legacy streams carry c=BF, which is not a cipher name and falls
+        // through to Blowfish stripe inside waCipherFromName.
+        _deezerCryptor = waCryptorCreateCipher([rawID UTF8String], waCipherFromName([cipherName UTF8String]));
         if (!_deezerCryptor) return NO;
         _deezerDecrypt = YES;
         fetchURL = cdnURL;

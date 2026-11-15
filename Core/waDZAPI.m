@@ -273,6 +273,9 @@ static BOOL waPreviewURL(NSString *url) {
         NSDictionary *json = [parsed isKindOfClass:[NSDictionary class]] ? parsed : nil;
         NSDictionary *results = [json[@"results"] isKindOfClass:[NSDictionary class]] ? json[@"results"] : nil;
         NSDictionary *user = [results[@"USER"] isKindOfClass:[NSDictionary class]] ? results[@"USER"] : nil;
+        NSMutableDictionary *profile = user ? [user mutableCopy] : nil;
+        if (!waStr(profile[@"COUNTRY"]).length && waStr(results[@"COUNTRY"]).length) profile[@"COUNTRY"] = results[@"COUNTRY"];
+        if (!waStr(profile[@"OFFER_NAME"]).length && waStr(results[@"OFFER_NAME"]).length) profile[@"OFFER_NAME"] = results[@"OFFER_NAME"];
         NSDictionary *options = [user[@"OPTIONS"] isKindOfClass:[NSDictionary class]] ? user[@"OPTIONS"] : nil;
         NSString *checkForm = waStr(results[@"checkForm"]) ?: waStr(results[@"CHECK_FORM"]);
         NSString *session = waStr(results[@"SESSION_ID"]) ?: waStr(user[@"SESSION_ID"]);
@@ -284,7 +287,7 @@ static BOOL waPreviewURL(NSString *url) {
             self.licenseToken = license;
             [[waLog shared] log:@"deezer session ok user=%@ license=%d", waStr(user[@"BLOG_NAME"]), license.length > 0];
         }
-        if (completion) completion(user, error);
+        if (completion) completion(profile, error);
     }];
 }
 
@@ -352,19 +355,25 @@ static BOOL waPreviewURL(NSString *url) {
     }];
 }
 
-- (void)signedURLForTrackToken:(NSString *)trackToken formats:(NSArray *)formats completion:(void (^)(NSString *, NSString *, NSError *))completion {
+- (void)signedURLForTrackToken:(NSString *)trackToken formats:(NSArray *)formats completion:(void (^)(NSString *, NSString *, NSString *, NSError *))completion {
     if (waWifiOnlyEnabled() && waOnCellular()) {
-        if (completion) completion(nil, nil, waNetworkGateError());
+        if (completion) completion(nil, nil, nil, waNetworkGateError());
         return;
     }
     if (!self.licenseToken.length) {
-        if (completion) completion(nil, nil, waError(@"Connect your Deezer account first.", 401));
+        if (completion) completion(nil, nil, nil, waError(@"Connect your Deezer account first.", 401));
         return;
     }
-    NSMutableArray *cipherFormats = [NSMutableArray arrayWithCapacity:formats.count];
+    // Ask for every cipher the decryptor can handle, best first. The grant
+    // comes back with the cipher it actually applied, which rides on the
+    // stream URL so the decryptor never has to guess.
+    static NSString * const waCiphers[] = {@"BF_CBC_STRIPE", @"AES_CTR", @"AES_CBC_STRIPE"};
+    NSMutableArray *cipherFormats = [NSMutableArray array];
     for (NSString *format in formats) {
         if (!format.length) continue;
-        [cipherFormats addObject:@{@"cipher": @"BF_CBC_STRIPE", @"format": format}];
+        for (NSUInteger i = 0; i < sizeof(waCiphers) / sizeof(waCiphers[0]); i++) {
+            [cipherFormats addObject:@{@"cipher": waCiphers[i], @"format": format}];
+        }
     }
     if (!cipherFormats.count) [cipherFormats addObject:@{@"cipher": @"BF_CBC_STRIPE", @"format": @"MP3_128"}];
     NSDictionary *bodyObject = @{@"license_token": self.licenseToken,
@@ -379,6 +388,7 @@ static BOOL waPreviewURL(NSString *url) {
         NSDictionary *json = [parsed isKindOfClass:[NSDictionary class]] ? parsed : nil;
         NSString *urlString = nil;
         NSString *grantedFormat = nil;
+        NSString *grantedCipher = nil;
         id array = json[@"data"];
         if ([array isKindOfClass:[NSArray class]] && [array count]) {
             NSDictionary *entry = [array objectAtIndex:0];
@@ -403,6 +413,7 @@ static BOOL waPreviewURL(NSString *url) {
                         if (!candidate.length || waPreviewURL(candidate)) continue;
                         urlString = candidate;
                         grantedFormat = waStr(mediaEntry[@"format"]) ?: grantedFormat;
+                        grantedCipher = waStr(mediaEntry[@"cipher"]) ?: waStr(source[@"cipher"]) ?: grantedCipher;
                         error = nil;
                         break;
                     }
@@ -415,7 +426,7 @@ static BOOL waPreviewURL(NSString *url) {
             urlString = nil;
             error = waError(@"Deezer returned a 30-second preview.", 403);
         }
-        if (completion) completion(urlString, grantedFormat, error);
+        if (completion) completion(urlString, grantedFormat, grantedCipher, error);
     }];
 }
 

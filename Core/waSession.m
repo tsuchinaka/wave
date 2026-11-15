@@ -204,13 +204,13 @@ static NSError *waErr(NSString *message, NSInteger code) {
         if (!trackID.length) return;
         [[waDZAPI shared] trackTokenForID:trackID completion:^(NSString *token, NSError *tokenError) {
             if (!token.length) return;
-            [[waDZAPI shared] signedURLForTrackToken:token formats:@[@"FLAC"] completion:^(NSString *url, NSString *format, NSError *losslessError) {
+            [[waDZAPI shared] signedURLForTrackToken:token formats:@[@"FLAC"] completion:^(NSString *url, NSString *format, NSString *cipher, NSError *losslessError) {
                 if (url.length && !losslessError) {
                     [[waLog shared] log:@"lossless available"];
                     [[NSNotificationCenter defaultCenter] postNotificationName:waSessionDidChangeNotification object:self];
                     return;
                 }
-                        [[waDZAPI shared] signedURLForTrackToken:token formats:@[@"MP3_320"] completion:^(NSString *mp3URL, NSString *mp3Format, NSError *mp3Error) {
+                        [[waDZAPI shared] signedURLForTrackToken:token formats:@[@"MP3_320"] completion:^(NSString *mp3URL, NSString *mp3Format, NSString *cipher, NSError *mp3Error) {
                     waQuality cap = (mp3URL.length && !mp3Error) ? waQualityMP3320 : waQualityMP3128;
                     self.maximumQuality = cap;
                     if ((NSInteger)self.preferredQuality > (NSInteger)cap) self.preferredQuality = cap;
@@ -1121,7 +1121,7 @@ static NSError *waErr(NSString *message, NSInteger code) {
         NSString *keyID = streamID.length ? streamID : track.identifier;
         waQuality quality = self.preferredQuality;
         NSArray *formats = [waSession formatsForQuality:quality];
-        [[waDZAPI shared] signedURLForTrackToken:token formats:formats completion:^(NSString *url, NSString *format, NSError *urlError) {
+        [[waDZAPI shared] signedURLForTrackToken:token formats:formats completion:^(NSString *url, NSString *format, NSString *cipher, NSError *urlError) {
             if (urlError || !url.length) {
                 if (completion) completion(nil, 0, urlError ?: waErr(@"Deezer did not return a full stream.", 403));
                 return;
@@ -1135,14 +1135,14 @@ static NSError *waErr(NSString *message, NSInteger code) {
             // cannot negotiate modern TLS with the HTTPS edge.
             if ([url hasPrefix:@"https://"]) url = [@"http://" stringByAppendingString:[url substringFromIndex:8]];
             NSString *escaped = (__bridge_transfer NSString *)CFURLCreateStringByAddingPercentEscapes(NULL, (__bridge CFStringRef)url, NULL, CFSTR(":/?#[]@!$&'()*+,;="), kCFStringEncodingUTF8);
-            NSString *schemeURL = [NSString stringWithFormat:@"deezer://stream/%@.%@?u=%@&c=BF",
-                                   keyID, extension, escaped ?: @""];
+            NSString *schemeURL = [NSString stringWithFormat:@"deezer://stream/%@.%@?u=%@&c=%@",
+                                   keyID, extension, escaped ?: @"", cipher.length ? cipher : @"BF_CBC_STRIPE"];
             NSURL *streamURL = [NSURL URLWithString:schemeURL];
             if (!streamURL) {
                 if (completion) completion(nil, 0, waErr(@"Could not build the stream URL.", 500));
                 return;
             }
-            [[waLog shared] log:@"stream full %@ as %@ %@", track.identifier, keyID, format ?: @"MP3_128"];
+            [[waLog shared] log:@"stream full %@ as %@ %@ %@", track.identifier, keyID, format ?: @"MP3_128", cipher ?: @"BF_CBC_STRIPE"];
             if (completion) completion(streamURL, granted, nil);
         }];
     }];

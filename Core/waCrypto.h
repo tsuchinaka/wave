@@ -10,17 +10,33 @@ extern "C" {
 
 #define WA_STRIPE 2048u
 
+// Cipher the CDN applied to a stripe. BF_CBC_STRIPE is the only one Deezer
+// serves today; the rest are the published media ciphers so a new grant is
+// a one-line addition here instead of a parser change.
+typedef enum {
+    waCipherNone = 0,
+    waCipherBlowfishStripe = 1,   // BF_CBC_STRIPE: 2048-byte stripes, every third
+    waCipherAESCTR = 2,           // AES_CTR
+    waCipherAESCBCStripe = 3      // AES_CBC_STRIPE
+} waCipher;
+
+// Case-insensitive. Unknown names fall back to Blowfish stripe, which is
+// what every stream has been until now.
+waCipher waCipherFromName(const char *name);
+
 typedef struct waCryptor waCryptor;
 
 // Deezer ARL key: md5_hex(trackID)[0..16] XOR md5_hex(trackID)[16..32] XOR secret.
 void waKeyForTrack(const char *trackID, uint8_t outKey[16]);
 
-// One persistent Blowfish context per track. The key schedule is built once;
-// only the IV is reset per stripe, which is where the old code burned time.
+// One persistent context per track. The key schedule is built once; only
+// the IV is reset per stripe.
 waCryptor *waCryptorCreate(const char *trackID);
+waCryptor *waCryptorCreateCipher(const char *trackID, waCipher cipher);
 void waCryptorFree(waCryptor *c);
 
-// Decrypts one 2048-byte stripe in place when (index % 3 == 0).
+// Decrypts one stripe in place when (index % 3 == 0). Length may be a
+// partial tail; only the block-aligned prefix is transformed.
 int waCryptorStripe(waCryptor *c, unsigned long index, uint8_t *data, size_t length);
 
 // Consumes whole stripes from a buffer, advancing *index. in-place.

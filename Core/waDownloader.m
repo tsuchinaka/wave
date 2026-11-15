@@ -160,7 +160,7 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
 - (void)resolveWithToken:(NSString *)token {
     NSArray *formats = [waSession formatsForQuality:self.download.quality];
     __weak waDownloadTask *weakSelf = self;
-    [[waDZAPI shared] signedURLForTrackToken:token formats:formats completion:^(NSString *url, NSString *format, NSError *error) {
+    [[waDZAPI shared] signedURLForTrackToken:token formats:formats completion:^(NSString *url, NSString *format, NSString *cipher, NSError *error) {
         waDownloadTask *strongSelf = weakSelf;
         if (!strongSelf) return;
         if (error || !url.length) { [strongSelf failWithMessage:error.localizedDescription ?: @"No stream URL."]; return; }
@@ -174,11 +174,11 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
         strongSelf.download.bytesReceived = 0;
         strongSelf.download.bytesExpected = 0;
         NSString *playable = [url hasPrefix:@"https://"] ? [@"http://" stringByAppendingString:[url substringFromIndex:8]] : url;
-        [strongSelf beginWithURL:[NSURL URLWithString:playable] extension:extension];
+        [strongSelf beginWithURL:[NSURL URLWithString:playable] extension:extension cipher:cipher];
     }];
 }
 
-- (void)beginWithURL:(NSURL *)url extension:(NSString *)extension {
+- (void)beginWithURL:(NSURL *)url extension:(NSString *)extension cipher:(NSString *)cipher {
     NSString *temp = [self.download.filePath stringByAppendingString:@".part"];
     self.temporaryPath = temp;
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:60.0];
@@ -195,7 +195,7 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
         task.handle = [NSFileHandle fileHandleForWritingAtPath:temp];
         task.remainder = [NSMutableData data];
         task.chunkIndex = 0;
-        task.cryptor = waCryptorCreate([task.download.trackID UTF8String]);
+        task.cryptor = waCryptorCreateCipher([task.download.trackID UTF8String], waCipherFromName(cipher.UTF8String));
         task.decrypting = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
             waDownloadTask *armed = weakSelf;
