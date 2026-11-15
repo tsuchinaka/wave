@@ -82,21 +82,6 @@
 	<false/>
 		<key>UIAppFonts</key>
 	<array>
-		<string>wave-deezer-font/DeezerProduct-Regular.ttf</string>
-		<string>wave-deezer-font/DeezerProduct-Light.ttf</string>
-		<string>wave-deezer-font/DeezerProduct-Medium.ttf</string>
-		<string>wave-deezer-font/DeezerProduct-Bold.ttf</string>
-		<string>wave-deezer-font/DeezerProduct-Extrabold.ttf</string>
-		<string>wave-deezer-font/Deezer-Font-Icon.ttf</string>
-		<string>wave-inter-font/Inter_18pt-Regular.ttf</string>
-		<string>wave-inter-font/Inter_18pt-Medium.ttf</string>
-		<string>wave-inter-font/Inter_18pt-Bold.ttf</string>
-		<string>wave-inter-font/Inter_24pt-Regular.ttf</string>
-		<string>wave-inter-font/Inter_24pt-Medium.ttf</string>
-		<string>wave-inter-font/Inter_24pt-Bold.ttf</string>
-		<string>wave-inter-font/Inter_28pt-Regular.ttf</string>
-		<string>wave-inter-font/Inter_28pt-Medium.ttf</string>
-		<string>wave-inter-font/Inter_28pt-Bold.ttf</string>
 	</array>
 </dict>
 </plist>
