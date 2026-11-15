@@ -10,6 +10,7 @@
 
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <errno.h>
@@ -20,28 +21,29 @@ static NSError *waTLSError(NSInteger code, NSString *message) {
     return [NSError errorWithDomain:@"wave.tls" code:code userInfo:@{NSLocalizedDescriptionKey: message ?: @"TLS failed."}];
 }
 
+static int waTLSMapErrno(int writing) {
+    if (errno == EINTR) return writing ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_SSL_WANT_READ;
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) return MBEDTLS_ERR_SSL_TIMEOUT;
+    if (errno == EPIPE || errno == ECONNRESET) return MBEDTLS_ERR_SSL_CONN_EOF;
+    return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+}
+
 static int waTLSBioSend(void *context, const unsigned char *buf, size_t len) {
     int fd = *(int *)context;
-    size_t sent = 0;
-    while (sent < len) {
-        ssize_t n = send(fd, buf + sent, len - sent, 0);
-        if (n <= 0) {
-            if (errno == EINTR) continue;
-            return MBEDTLS_ERR_SSL_WANT_WRITE;
-        }
-        sent += (size_t)n;
-    }
-    return (int)sent;
+    ssize_t n = send(fd, buf, len, 0);
+    if (n < 0) return waTLSMapErrno(1);
+    return (int)n;
 }
 
 static int waTLSBioRecv(void *context, unsigned char *buf, size_t len) {
     int fd = *(int *)context;
     ssize_t n = recv(fd, buf, len, 0);
-    if (n < 0) {
-        if (errno == EINTR) return MBEDTLS_ERR_SSL_WANT_READ;
-        return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
-    }
+    if (n < 0) return waTLSMapErrno(0);
     return (int)n;
+}
+
+static int waTLSTimedOut(CFAbsoluteTime deadline) {
+    return CFAbsoluteTimeGetCurrent() >= deadline;
 }
 
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen) {
@@ -100,10 +102,14 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
         return nil;
     }
 
+    if (timeout < 1.0) timeout = 1.0;
+    if (timeout > 20.0) timeout = 20.0;
+    CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + timeout;
+
     struct addrinfo hints;
     struct addrinfo *result = NULL;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     NSString *service = url.port ? url.port.stringValue : @"443";
     int gai = getaddrinfo(url.host.UTF8String, service.UTF8String, &hints, &result);
@@ -204,7 +210,15 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
     mbedtls_ssl_set_bio(&ssl, &socketFD, waTLSBioSend, waTLSBioRecv, NULL);
 
     while ((status = mbedtls_ssl_handshake(&ssl)) != 0) {
-        if (status != MBEDTLS_ERR_SSL_WANT_READ && status != MBEDTLS_ERR_SSL_WANT_WRITE) break;
+        if (waTLSTimedOut(deadline) || status == MBEDTLS_ERR_SSL_TIMEOUT) {
+            status = MBEDTLS_ERR_SSL_TIMEOUT;
+            break;
+        }
+        if (status == MBEDTLS_ERR_SSL_WANT_READ || status == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            usleep(20000);
+            continue;
+        }
+        break;
     }
     if (status != 0) {
         char buffer[160];
@@ -222,7 +236,11 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
     [head appendFormat:@"%@ %@ HTTP/1.1\r\n", method ?: @"GET", path];
     [head appendFormat:@"Host: %@\r\n", url.host];
     [head appendString:@"Connection: close\r\n"];
-    [head appendString:@"User-Agent: Wave/1.0 (iOS 5.1; lyrics)\r\n"];
+    BOOL callerAgent = NO;
+    for (NSString *key in headers) {
+        if ([key caseInsensitiveCompare:@"User-Agent"] == NSOrderedSame) { callerAgent = YES; break; }
+    }
+    if (!callerAgent) [head appendString:@"User-Agent: Wave/1.0 (iOS 5.1)\r\n"];
     [head appendString:@"Accept: application/json,*/*\r\n"];
     [head appendString:@"Accept-Encoding: identity\r\n"];
     if (body.length) [allHeaders setObject:@"application/json" forKey:@"Content-Type"];
@@ -241,19 +259,34 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
     size_t written = 0;
     const unsigned char *bytes = requestData.bytes;
     while (written < requestData.length) {
+        if (waTLSTimedOut(deadline)) {
+            if (error) *error = waTLSError(11, @"TLS write timed out.");
+            goto cleanup;
+        }
         int n = mbedtls_ssl_write(&ssl, bytes + written, requestData.length - written);
         if (n > 0) { written += (size_t)n; continue; }
-        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            usleep(20000);
+            continue;
+        }
         if (error) *error = waTLSError(11, @"TLS write failed.");
         goto cleanup;
     }
 
     unsigned char chunk[4096];
     while (YES) {
+        if (waTLSTimedOut(deadline)) {
+            if (error) *error = waTLSError(12, @"TLS read timed out.");
+            goto cleanup;
+        }
+        if (response.length > 1024 * 1024) break;
         int n = mbedtls_ssl_read(&ssl, chunk, sizeof(chunk));
         if (n > 0) { [response appendBytes:chunk length:(NSUInteger)n]; continue; }
-        if (n == 0 || n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) break;
-        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+        if (n == 0 || n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || n == MBEDTLS_ERR_SSL_TIMEOUT) break;
+        if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            usleep(20000);
+            continue;
+        }
         break;
     }
 
@@ -265,7 +298,6 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
     statusCode = [parsedResponse[@"status"] integerValue];
     parsedHeaders = parsedResponse[@"headers"];
     parsed = parsedResponse[@"body"];
-    mbedtls_ssl_close_notify(&ssl);
 
 cleanup:
     mbedtls_ssl_free(&ssl);
