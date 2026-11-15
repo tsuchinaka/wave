@@ -5,6 +5,10 @@
 @interface waCell ()
 @property (nonatomic, strong) UIImageView *explicitView;
 @property (nonatomic, strong) UILabel *downloadedView;
+@property (nonatomic, copy) NSString *cachedBadgeText;
+@property (nonatomic, assign) CGFloat cachedBadgeWidth;
+@property (nonatomic, copy) NSString *cachedIndexText;
+@property (nonatomic, assign) CGFloat cachedIndexWidth;
 @end
 
 @implementation waCell
@@ -65,14 +69,8 @@
         _downloadedView.text = @"✓";
         _downloadedView.hidden = YES;
         [self.contentView addSubview:_downloadedView];
-
-        _sectionPosition = 3;
     }
     return self;
-}
-
-- (void)setSectionPosition:(NSInteger)position {
-    _sectionPosition = position;
 }
 
 - (void)setDownloaded:(BOOL)downloaded {
@@ -98,18 +96,20 @@
     self.detailTextLabel.numberOfLines = 1;
 
     CGFloat durationW = 0.0;
-    if (self.badgeLabel.text.length) {
-        durationW = [self.badgeLabel.text sizeWithFont:self.badgeLabel.font].width + 4.0;
-        if (durationW < 36.0) durationW = 36.0;
-        if (durationW > 52.0) durationW = 52.0;
+    NSString *badge = self.badgeLabel.text;
+    if (badge.length) {
+        if (![badge isEqualToString:self.cachedBadgeText] || self.cachedBadgeWidth <= 0.0) {
+            self.cachedBadgeText = badge;
+            CGFloat measured = [badge sizeWithFont:self.badgeLabel.font].width + 4.0;
+            if (measured < 36.0) measured = 36.0;
+            if (measured > 52.0) measured = 52.0;
+            self.cachedBadgeWidth = measured;
+        }
+        durationW = self.cachedBadgeWidth;
     }
     CGFloat explicitWidth = self.explicitView.hidden ? 0.0 : 16.0;
     CGFloat markW = self.downloadedMark ? 14.0 : 0.0;
     self.downloadedView.hidden = !self.downloadedMark;
-    self.indexLabel.text = self.indexText;
-    self.indexLabel.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
-    self.indexLabel.font = [UIFont boldSystemFontOfSize:15.0];
-    self.indexLabel.hidden = (self.indexText.length == 0);
     BOOL showsArt = (self.artworkView.image != nil) || (self.expectedArtworkURL.length > 0);
     if (showsArt) {
         CGFloat side = height - 10.0;
@@ -122,12 +122,18 @@
         self.artworkView.frame = CGRectZero;
     }
     CGFloat left = self.artworkView.hidden ? 8.0 : CGRectGetMaxX(self.artworkView.frame) + 8.0;
+    NSString *indexText = self.indexText;
     if (!self.indexLabel.hidden) {
         CGFloat indexW = 20.0;
-        if (self.indexText.length) {
-            indexW = [self.indexText sizeWithFont:self.indexLabel.font].width + 6.0;
-            if (indexW < 20.0) indexW = 20.0;
-            if (indexW > 36.0) indexW = 36.0;
+        if (indexText.length) {
+            if (![indexText isEqualToString:self.cachedIndexText] || self.cachedIndexWidth <= 0.0) {
+                self.cachedIndexText = indexText;
+                CGFloat measured = [indexText sizeWithFont:self.indexLabel.font].width + 6.0;
+                if (measured < 20.0) measured = 20.0;
+                if (measured > 36.0) measured = 36.0;
+                self.cachedIndexWidth = measured;
+            }
+            indexW = self.cachedIndexWidth;
         }
         self.indexLabel.frame = CGRectMake(left, 0.0, indexW, height);
         left = CGRectGetMaxX(self.indexLabel.frame) + 8.0;

@@ -15,7 +15,6 @@
 @property (nonatomic, strong) UILabel *indexLabel;
 @property (nonatomic, copy) NSString *indexText;
 @property (nonatomic, copy) NSString *expectedArtworkURL;
-@property (nonatomic, assign) NSInteger sectionPosition;
 @property (nonatomic, assign) BOOL downloadedMark;
 - (void)setDownloaded:(BOOL)downloaded;
 - (void)loadArtworkForURL:(NSString *)url size:(CGSize)size;
