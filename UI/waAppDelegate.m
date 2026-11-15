@@ -3,12 +3,9 @@
 #import "../Core/waPlayer.h"
 #import "../Core/waLastFM.h"
 #import "../Core/waLog.h"
+#import "../Core/waCrash.h"
 #import "waDetailController.h"
 #import "../Skin/waSkin.h"
-
-static void waCrashHandler(NSException *exception) {
-    [[waLog shared] log:@"crash %@ %@", exception.name, exception.reason];
-}
 
 @implementation waRootController (AppBoot)
 @end
@@ -17,7 +14,7 @@ static void waCrashHandler(NSException *exception) {
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     (void)launchOptions;
-    NSSetUncaughtExceptionHandler(&waCrashHandler);
+    [waCrash install];
     [waSkin install];
 
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];

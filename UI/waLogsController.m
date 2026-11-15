@@ -1,4 +1,5 @@
 #import "waLogsController.h"
+#import "../Core/waCrash.h"
 
 @interface waLogsController ()
 @property (nonatomic, strong) UITextView *textView;
@@ -57,6 +58,11 @@
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *path = [weakSelf logPath];
         NSString *text = path.length ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] : nil;
+        NSString *crash = [waCrash lastReport];
+        if (crash.length) {
+            NSString *log = text.length ? text : @"";
+            text = [NSString stringWithFormat:@"=== LAST CRASH ===\n%@\n=== LOG ===\n%@", crash, log];
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             weakSelf.textView.text = text.length ? text : @"(empty)";
             if (weakSelf.textView.text.length) {
