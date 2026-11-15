@@ -253,14 +253,6 @@ static NSError *waErr(NSString *message, NSInteger code) {
     }
 }
 
-- (NSString *)qualityShortName:(waQuality)quality {
-    switch (quality) {
-        case waQualityHIFI: return @"FLAC";
-        case waQualityFLAC: return @"FLAC";
-        case waQualityMP3320: return @"320";
-        default: return @"128";
-    }
-}
 
 + (NSArray *)formatsForQuality:(waQuality)quality {
     switch (quality) {
@@ -471,13 +463,6 @@ static NSError *waErr(NSString *message, NSInteger code) {
     }];
 }
 
-- (void)searchSuggestions:(NSString *)query completion:(void (^)(NSArray *))completion {
-    if (!query.length) { if (completion) completion(@[]); return; }
-    [[waDZAPI shared] getPath:@"/search/artist" params:@{@"q": query, @"limit": @"6"} completion:^(NSDictionary *json, NSError *error) {
-        if (error) { if (completion) completion(@[]); return; }
-        if (completion) completion([self itemsFrom:waArray(json, nil) kind:waArtistType]);
-    }];
-}
 
 - (void)chartWithCompletion:(void (^)(waChart *, NSError *))completion {
     [[waDZAPI shared] getPath:@"/chart" params:nil completion:^(NSDictionary *json, NSError *error) {
@@ -724,22 +709,7 @@ static NSError *waErr(NSString *message, NSInteger code) {
     }];
 }
 
-- (void)recommendationsWithCompletion:(void (^)(NSArray *, NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/editorial/0/releases" params:@{@"limit": @"25"} completion:^(NSDictionary *albumsJSON, NSError *albumsError) {
-        NSArray *albums = albumsError ? @[] : [self itemsFrom:waArray(albumsJSON, nil) kind:waAlbumType];
-        [[waDZAPI shared] getPath:@"/chart" params:nil completion:^(NSDictionary *chartJSON, NSError *chartError) {
-            NSArray *artists = chartError ? @[] : [self itemsFrom:waArray(chartJSON, @"artists") kind:waArtistType];
-            if (completion) completion(albums, artists, nil);
-        }];
-    }];
-}
 
-- (void)historyWithCompletion:(void (^)(NSArray *, NSError *))completion {
-    NSArray *raw = [[NSUserDefaults standardUserDefaults] arrayForKey:waHistoryKey];
-    NSMutableArray *tracks = [NSMutableArray array];
-    for (NSDictionary *dict in raw) [tracks addObject:[waItem itemWithDictionary:dict kind:waTrackType]];
-    if (completion) completion(tracks, nil);
-}
 
 - (void)rememberTrack:(waTrack *)track {
     if (!track.identifier.length) return;
@@ -1187,12 +1157,6 @@ static NSError *waErr(NSString *message, NSInteger code) {
     }];
 }
 
-- (void)renamePlaylist:(waPlaylist *)playlist to:(NSString *)name completion:(void (^)(BOOL, NSError *))completion {
-    [[waDZAPI shared] callMethod:@"playlist.update" params:@{@"playlist_id": playlist.identifier ?: @"", @"title": name ?: @""} completion:^(NSDictionary *result, NSError *error) {
-        if (!error) playlist.title = name;
-        if (completion) completion(!error, error);
-    }];
-}
 
 - (void)addTrack:(waTrack *)track toPlaylist:(waPlaylist *)playlist completion:(void (^)(BOOL, NSError *))completion {
     NSDictionary *params = @{@"playlist_id": playlist.identifier ?: @"",
@@ -1367,17 +1331,7 @@ static NSError *waErr(NSString *message, NSInteger code) {
     return comments;
 }
 
-- (void)albumFans:(NSString *)albumID completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/album/%@/fans", albumID] params:@{@"limit": @"100"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waUserType], error);
-    }];
-}
 
-- (void)artistFans:(NSString *)artistID completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/artist/%@/fans", artistID] params:@{@"limit": @"100"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waUserType], error);
-    }];
-}
 
 - (void)artistPlaylists:(NSString *)artistID completion:(void (^)(NSArray *, NSError *))completion {
     [self fetchList:[NSString stringWithFormat:@"/artist/%@/playlists", artistID] kind:waPlaylistType completion:completion];
@@ -1468,98 +1422,18 @@ static NSError *waErr(NSString *message, NSInteger code) {
     }];
 }
 
-- (void)artistComments:(NSString *)artistID completion:(void (^)(NSArray *, NSError *))completion {
-    [self commentsForPath:[NSString stringWithFormat:@"/artist/%@/comments", artistID] completion:completion];
-}
 
-- (void)chartWithIdentifier:(NSString *)chartID completion:(void (^)(waChart *, NSError *))completion {
-    NSString *path = chartID.length ? [NSString stringWithFormat:@"/chart/%@", chartID] : @"/chart";
-    [[waDZAPI shared] getPath:path params:nil completion:^(NSDictionary *json, NSError *error) {
-        if (error) { if (completion) completion(nil, error); return; }
-        waChart *chart = [[waChart alloc] init];
-        chart.tracks = [self itemsFrom:waArray(json, @"tracks") kind:waTrackType];
-        chart.albums = [self itemsFrom:waArray(json, @"albums") kind:waAlbumType];
-        chart.artists = [self itemsFrom:waArray(json, @"artists") kind:waArtistType];
-        chart.playlists = [self itemsFrom:waArray(json, @"playlists") kind:waPlaylistType];
-        if (completion) completion(chart, nil);
-    }];
-}
 
-- (void)editorialsWithCompletion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/editorial" params:nil completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waAlbumType], error);
-    }];
-}
 
-- (void)editorialSelection:(NSString *)editorialID completion:(void (^)(NSArray *, NSError *))completion {
-    NSString *ident = editorialID.length ? editorialID : @"0";
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/editorial/%@/selection", ident] params:@{@"limit": @"50"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waAlbumType], error);
-    }];
-}
 
-- (void)editorialCharts:(NSString *)editorialID completion:(void (^)(waChart *, NSError *))completion {
-    NSString *ident = editorialID.length ? editorialID : @"0";
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/editorial/%@/charts", ident] params:nil completion:^(NSDictionary *json, NSError *error) {
-        if (error) { if (completion) completion(nil, error); return; }
-        waChart *chart = [[waChart alloc] init];
-        chart.tracks = [self itemsFrom:waArray(json, @"tracks") kind:waTrackType];
-        chart.albums = [self itemsFrom:waArray(json, @"albums") kind:waAlbumType];
-        chart.artists = [self itemsFrom:waArray(json, @"artists") kind:waArtistType];
-        chart.playlists = [self itemsFrom:waArray(json, @"playlists") kind:waPlaylistType];
-        if (completion) completion(chart, nil);
-    }];
-}
 
-- (void)genreRadios:(NSString *)genreID completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/genre/%@/radios", genreID] params:nil completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waRadioType], error);
-    }];
-}
 
-- (void)playlistFans:(NSString *)playlistID completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/playlist/%@/fans", playlistID] params:@{@"limit": @"100"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waUserType], error);
-    }];
-}
 
-- (void)playlistComments:(NSString *)playlistID completion:(void (^)(NSArray *, NSError *))completion {
-    [self commentsForPath:[NSString stringWithFormat:@"/playlist/%@/comments", playlistID] completion:completion];
-}
 
-- (void)podcastsWithCompletion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/podcast" params:@{@"limit": @"100"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waPodcastType], error);
-    }];
-}
 
-- (void)podcast:(NSString *)podcastID completion:(void (^)(waPodcast *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/podcast/%@", podcastID] params:nil completion:^(NSDictionary *json, NSError *error) {
-        if (error) { if (completion) completion(nil, error); return; }
-        waPodcast *podcast = [waPodcast itemWithDictionary:json kind:waPodcastType];
-        [[waSession shared] podcastEpisodes:podcastID completion:^(NSArray *episodes, NSError *episodesError) {
-            (void)episodesError;
-            podcast.episodes = episodes;
-            if (completion) completion(podcast, nil);
-        }];
-    }];
-}
 
-- (void)podcastEpisodes:(NSString *)podcastID completion:(void (^)(NSArray *, NSError *))completion {
-    [self fetchList:[NSString stringWithFormat:@"/podcast/%@/episodes", podcastID] kind:waEpisodeType completion:completion];
-}
 
-- (void)episode:(NSString *)episodeID completion:(void (^)(waEpisode *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/episode/%@", episodeID] params:nil completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [waEpisode itemWithDictionary:json kind:waEpisodeType], error);
-    }];
-}
 
-- (void)radioGenresWithCompletion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/radio/genres" params:nil completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:@"genre"], error);
-    }];
-}
 
 - (void)radioTopWithCompletion:(void (^)(NSArray *, NSError *))completion {
     [[waDZAPI shared] getPath:@"/radio/top" params:@{@"limit": @"100"} completion:^(NSDictionary *json, NSError *error) {
@@ -1567,84 +1441,23 @@ static NSError *waErr(NSString *message, NSInteger code) {
     }];
 }
 
-- (void)radioListsWithCompletion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/radio/lists" params:@{@"limit": @"100"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waRadioType], error);
-    }];
-}
 
-- (void)searchPodcasts:(NSString *)query completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/search/podcast" params:@{@"q": query ?: @"", @"limit": @"40"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waPodcastType], error);
-    }];
-}
 
-- (void)searchRadio:(NSString *)query completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/search/radio" params:@{@"q": query ?: @"", @"limit": @"40"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waRadioType], error);
-    }];
-}
 
-- (void)searchUsers:(NSString *)query completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/search/user" params:@{@"q": query ?: @"", @"limit": @"40"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waUserType], error);
-    }];
-}
 
 - (void)user:(NSString *)userID completion:(void (^)(NSDictionary *, NSError *))completion {
     NSString *ident = userID.length ? userID : @"me";
     [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/user/%@", ident] params:nil completion:completion];
 }
 
-- (void)userPlaylists:(NSString *)userID completion:(void (^)(NSArray *, NSError *))completion {
-    [self fetchList:[NSString stringWithFormat:@"/user/%@/playlists", userID.length ? userID : @"me"] kind:waPlaylistType completion:completion];
-}
 
-- (void)userAlbums:(NSString *)userID completion:(void (^)(NSArray *, NSError *))completion {
-    [self fetchList:[NSString stringWithFormat:@"/user/%@/albums", userID.length ? userID : @"me"] kind:waAlbumType completion:completion];
-}
 
-- (void)userArtists:(NSString *)userID completion:(void (^)(NSArray *, NSError *))completion {
-    [self fetchList:[NSString stringWithFormat:@"/user/%@/artists", userID.length ? userID : @"me"] kind:waArtistType completion:completion];
-}
 
-- (void)userTracks:(NSString *)userID completion:(void (^)(NSArray *, NSError *))completion {
-    [self fetchList:[NSString stringWithFormat:@"/user/%@/tracks", userID.length ? userID : @"me"] kind:waTrackType completion:completion];
-}
 
-- (void)userFollowings:(NSString *)userID completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/user/%@/followings", userID.length ? userID : @"me"] params:@{@"limit": @"100"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waUserType], error);
-    }];
-}
 
-- (void)userFollowers:(NSString *)userID completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/user/%@/followers", userID.length ? userID : @"me"] params:@{@"limit": @"100"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waUserType], error);
-    }];
-}
 
-- (void)userChart:(NSString *)userID completion:(void (^)(waChart *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/user/%@/charts", userID.length ? userID : @"me"] params:nil completion:^(NSDictionary *json, NSError *error) {
-        if (error) { if (completion) completion(nil, error); return; }
-        waChart *chart = [[waChart alloc] init];
-        chart.tracks = [self itemsFrom:waArray(json, @"tracks") kind:waTrackType];
-        if (!chart.tracks.count) chart.tracks = [self itemsFrom:waArray(json, nil) kind:waTrackType];
-        if (completion) completion(chart, nil);
-    }];
-}
 
-- (void)userFlow:(NSString *)userID completion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/user/%@/flow", userID.length ? userID : @"me"] params:@{@"limit": @"50"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waTrackType], error);
-    }];
-}
 
-- (void)recommendTracksWithCompletion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/user/me/recommendations/tracks" params:@{@"limit": @"50"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waTrackType], error);
-    }];
-}
 
 - (void)recommendAlbumsWithCompletion:(void (^)(NSArray *, NSError *))completion {
     [[waDZAPI shared] getPath:@"/user/me/recommendations/albums" params:@{@"limit": @"50"} completion:^(NSDictionary *json, NSError *error) {
@@ -1658,21 +1471,8 @@ static NSError *waErr(NSString *message, NSInteger code) {
     }];
 }
 
-- (void)recommendPlaylistsWithCompletion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/user/me/recommendations/playlists" params:@{@"limit": @"50"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waPlaylistType], error);
-    }];
-}
 
-- (void)recommendRadiosWithCompletion:(void (^)(NSArray *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/user/me/recommendations/radios" params:@{@"limit": @"50"} completion:^(NSDictionary *json, NSError *error) {
-        if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waRadioType], error);
-    }];
-}
 
-- (void)optionsWithCompletion:(void (^)(NSDictionary *, NSError *))completion {
-    [[waDZAPI shared] getPath:@"/options" params:nil completion:completion];
-}
 
 - (void)albumTracks:(NSString *)albumID completion:(void (^)(NSArray *, NSError *))completion {
     [self fetchList:[NSString stringWithFormat:@"/album/%@/tracks", albumID] kind:waTrackType completion:^(NSArray *tracks, NSError *error) {
