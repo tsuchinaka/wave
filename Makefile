@@ -10,7 +10,7 @@ APPLICATION_NAME = wave
 
 CORE_FILES = Core/waModel.m Core/waCrypto.m Core/waAudioProbe.m Core/waDZAPI.m Core/waSession.m \
              Core/waDownloader.m Core/waImageCache.m Core/waLog.m Core/waAudioCore.m Core/waPlayer.m Core/waTLS.m \
-             Core/waLyrics.m Core/waLastFM.m Core/waCast.m Core/waCrash.m
+             Core/waLyrics.m Core/waLastFM.m Core/waCast.m Core/waCrash.m Core/waTags.m
 
 SKIN_FILES = Skin/waSkin.m Skin/waCell.m Skin/waTileView.m Skin/waCarouselView.m Skin/waCoverView.m Skin/waLyricStage.m
 
