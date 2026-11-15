@@ -43,5 +43,6 @@ typedef struct {
 - (NSDictionary *)plist;
 + (waLyrics *)lyricsFromDeezer:(NSDictionary *)result;
 + (waLyrics *)lyricsFromLRC:(NSString *)lrc;
++ (waLyrics *)lyricsFromLyricsfile:(NSString *)yaml;
 + (waLyrics *)lyricsFromPlist:(NSDictionary *)plist;
 @end

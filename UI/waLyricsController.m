@@ -2,6 +2,7 @@
 #import "waPlayer.h"
 #import "waSession.h"
 #import "waLyrics.h"
+#import <QuartzCore/CADisplayLink.h>
 
 @interface waLyricsController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) waTrack *track;
@@ -13,7 +14,7 @@
 @property (nonatomic, assign) NSInteger activeIndex;
 @property (nonatomic, assign) NSUInteger requestID;
 @property (nonatomic, assign) BOOL synced;
-@property (nonatomic, strong) NSTimer *highlightTimer;
+@property (nonatomic, strong) CADisplayLink *highlightLink;
 @end
 
 @implementation waLyricsController
@@ -35,7 +36,7 @@
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [self.highlightTimer invalidate];
+    [self.highlightLink invalidate];
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation {
@@ -78,21 +79,42 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self.highlightTimer invalidate];
-    self.highlightTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 target:self selector:@selector(updateHighlight) userInfo:nil repeats:YES];
+    [self.highlightLink invalidate];
+    self.highlightLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayFired:)];
+    self.highlightLink.frameInterval = 2;
+    [self.highlightLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [self.highlightTimer invalidate];
-    self.highlightTimer = nil;
+    [self.highlightLink invalidate];
+    self.highlightLink = nil;
+}
+
+- (void)displayFired:(CADisplayLink *)link {
+    (void)link;
+    [self updateHighlight];
 }
 
 - (void)trackDidChange:(NSNotification *)note {
     (void)note;
+    if (![NSThread isMainThread]) {
+        [self performSelectorOnMainThread:@selector(trackDidChange:) withObject:note waitUntilDone:NO];
+        return;
+    }
     waTrack *current = [waPlayer shared].currentTrack;
-    if (!current) return;
-    if ([current.identifier isEqualToString:self.track.identifier]) return;
+    if (!current) {
+        [self showMessage:@"No song is playing."];
+        return;
+    }
+    NSString *next = [current.identifier description];
+    NSString *have = [self.track.identifier description];
+    BOOL same = NO;
+    if (next.length && have.length) same = [next isEqualToString:have];
+    else if (!next.length && !have.length) {
+        same = [current.title ?: @"" isEqualToString:self.track.title ?: @""] && [current.artistName ?: @"" isEqualToString:self.track.artistName ?: @""];
+    }
+    if (same) return;
     self.track = current;
     [self loadLyrics];
 }
@@ -124,6 +146,12 @@
     self.messageLabel.hidden = YES;
     [self.spinner startAnimating];
     __weak waLyricsController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        waLyricsController *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.requestID != request) return;
+        if (!strongSelf.spinner.isAnimating) return;
+        [strongSelf showMessage:@"Lyrics not available."];
+    });
     [[waSession shared] lyricsForTrack:track completion:^(waLyrics *lyrics, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             waLyricsController *strongSelf = weakSelf;
@@ -137,7 +165,10 @@
                 [strongSelf showMessage:@"Instrumental"];
                 return;
             }
-            [strongSelf applyLyrics:lyrics];
+            @try { [strongSelf applyLyrics:lyrics]; }
+            @catch (NSException *exception) {
+                [strongSelf showMessage:@"Lyrics not available."];
+            }
         });
     }];
 }
@@ -174,17 +205,22 @@
 }
 
 - (void)updateHighlight {
-    if (!self.synced || !self.lines.count) return;
-    NSTimeInterval position = [waPlayer shared].currentTime;
+    if (!self.synced || !self.lines.count || self.times.count != self.lines.count) return;
+    NSTimeInterval position = [waPlayer shared].outputTime;
     NSInteger best = NSNotFound;
+    NSInteger count = (NSInteger)self.lines.count;
     for (NSUInteger i = 0; i < self.times.count; i++) {
         NSTimeInterval time = [[self.times objectAtIndex:i] doubleValue];
         if (time >= 0.0 && time <= position) best = (NSInteger)i;
     }
     if (best != self.activeIndex) {
+        NSInteger previous = self.activeIndex;
         self.activeIndex = best;
-        [self.tableView reloadData];
-        if (best != NSNotFound) {
+        NSMutableArray *paths = [NSMutableArray array];
+        if (previous != NSNotFound && previous >= 0 && previous < count) [paths addObject:[NSIndexPath indexPathForRow:previous inSection:0]];
+        if (best != NSNotFound && best >= 0 && best < count) [paths addObject:[NSIndexPath indexPathForRow:best inSection:0]];
+        if (paths.count) [self.tableView reloadRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationNone];
+        if (best != NSNotFound && !self.tableView.dragging && !self.tableView.decelerating) {
             NSIndexPath *path = [NSIndexPath indexPathForRow:best inSection:0];
             [self.tableView scrollToRowAtIndexPath:path atScrollPosition:UITableViewScrollPositionMiddle animated:YES];
         }

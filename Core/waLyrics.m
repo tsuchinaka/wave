@@ -215,8 +215,10 @@ static void waStitchWordEnds(NSArray *lines) {
 }
 
 static void waFillWordTimings(NSArray *lines) {
+    if (![lines isKindOfClass:[NSArray class]]) return;
     for (NSUInteger i = 0; i < lines.count; i++) {
         waLyricLine *line = [lines objectAtIndex:i];
+        if (![line isKindOfClass:[waLyricLine class]]) continue;
         NSTimeInterval end = line.end;
         if (end <= line.start && i + 1 < lines.count) {
             waLyricLine *next = [lines objectAtIndex:i + 1];
@@ -552,6 +554,162 @@ static NSTimeInterval waParseTimestamp(NSString *stamp) {
         [lyrics markInstrumental];
     }
     return lyrics;
+}
+
+static NSString *waYAMLScalar(NSString *value);
+
++ (waLyrics *)lyricsFromLyricsfile:(NSString *)yaml {
+    if (![yaml isKindOfClass:[NSString class]] || !yaml.length) return nil;
+    NSMutableArray *parsed = [NSMutableArray array];
+    NSMutableDictionary *lineMap = nil;
+    NSMutableDictionary *wordMap = nil;
+    NSInteger lineDash = -1;
+    BOOL instrumental = NO;
+    BOOL inPlain = NO;
+    NSInteger plainIndent = 0;
+    NSMutableString *plain = [NSMutableString string];
+    NSArray *rawLines = [yaml componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    for (NSString *raw in rawLines) {
+        if (inPlain) {
+            NSInteger indent = 0;
+            while (indent < (NSInteger)raw.length && [raw characterAtIndex:(NSUInteger)indent] == ' ') indent++;
+            NSString *trim = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (trim.length && indent < plainIndent) inPlain = NO;
+            else {
+                NSString *chunk = (indent >= plainIndent && (NSInteger)raw.length >= plainIndent) ? [raw substringFromIndex:(NSUInteger)plainIndent] : @"";
+                if (plain.length) [plain appendString:@"\n"];
+                [plain appendString:chunk];
+                continue;
+            }
+        }
+        NSInteger indent = 0;
+        while (indent < (NSInteger)raw.length && [raw characterAtIndex:(NSUInteger)indent] == ' ') indent++;
+        NSString *trim = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!trim.length || [trim hasPrefix:@"#"]) continue;
+        BOOL dash = [trim hasPrefix:@"- "];
+        NSString *body = dash ? [[trim substringFromIndex:2] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] : trim;
+        NSRange colon = [body rangeOfString:@":"];
+        if (colon.location == NSNotFound || colon.location == 0) continue;
+        NSString *key = [body substringToIndex:colon.location];
+        NSString *value = colon.location + 1 < body.length ? [body substringFromIndex:colon.location + 1] : @"";
+        value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if ([key isEqualToString:@"plain"] && (!value.length || [value isEqualToString:@"|"] || [value isEqualToString:@">"])) {
+            inPlain = YES;
+            plainIndent = indent + 2;
+            continue;
+        }
+        if ([key isEqualToString:@"instrumental"]) {
+            instrumental = [value isEqualToString:@"true"] || [value isEqualToString:@"yes"];
+            continue;
+        }
+        if ([key isEqualToString:@"words"]) {
+            wordMap = nil;
+            if (lineMap) lineMap[@"words"] = [NSMutableArray array];
+            continue;
+        }
+        if (dash && [key isEqualToString:@"text"]) {
+            NSString *text = waYAMLScalar(value);
+            if (lineMap && indent > lineDash) {
+                wordMap = [NSMutableDictionary dictionaryWithObject:text ?: @"" forKey:@"text"];
+                NSMutableArray *words = lineMap[@"words"];
+                if (!words) {
+                    words = [NSMutableArray array];
+                    lineMap[@"words"] = words;
+                }
+                [words addObject:wordMap];
+            } else {
+                lineMap = [NSMutableDictionary dictionaryWithObject:text ?: @"" forKey:@"text"];
+                wordMap = nil;
+                lineDash = indent;
+                [parsed addObject:lineMap];
+            }
+            continue;
+        }
+        NSMutableDictionary *target = (wordMap && indent > lineDash + 2) ? wordMap : lineMap;
+        if (!target) continue;
+        if ([key isEqualToString:@"start_ms"] || [key isEqualToString:@"end_ms"]) target[key] = value;
+    }
+    waLyrics *lyrics = [[waLyrics alloc] init];
+    lyrics.source = @"lrclib";
+    lyrics.plain = plain;
+    if (instrumental && !parsed.count) {
+        [lyrics markInstrumental];
+        return lyrics;
+    }
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSDictionary *entry in parsed) {
+        NSString *text = waLyricStr(entry[@"text"]);
+        if (!text.length) continue;
+        waLyricLine *line = [[waLyricLine alloc] init];
+        NSTimeInterval start = waLyricTime(entry[@"start_ms"]);
+        NSTimeInterval end = waLyricTime(entry[@"end_ms"]);
+        line.start = start < 0.0 ? 0.0 : start;
+        line.end = end > line.start ? end : line.start;
+        line.voice = waConsumeVoice(&text);
+        line.text = text;
+        NSMutableArray *words = [NSMutableArray array];
+        id rawWords = entry[@"words"];
+        if ([rawWords isKindOfClass:[NSArray class]]) {
+            for (id piece in rawWords) {
+                if (![piece isKindOfClass:[NSDictionary class]]) continue;
+                NSString *wordText = waLyricStr(piece[@"text"]);
+                if (!wordText.length) continue;
+                NSTimeInterval ws = waLyricTime(piece[@"start_ms"]);
+                NSTimeInterval we = waLyricTime(piece[@"end_ms"]);
+                if (ws < 0.0) ws = line.start;
+                waLyricWord *word = [[waLyricWord alloc] init];
+                word.text = wordText;
+                word.start = ws;
+                word.end = we > ws ? we : ws;
+                [words addObject:word];
+            }
+        }
+        if (words.count) lyrics.wordTimed = YES;
+        line.words = words;
+        [lines addObject:line];
+    }
+    [lines sortUsingComparator:^NSComparisonResult(waLyricLine *a, waLyricLine *b) {
+        if (a.start < b.start) return NSOrderedAscending;
+        if (a.start > b.start) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    waFillWordTimings(lines);
+    lyrics.lines = lines;
+    for (waLyricLine *line in lines) if (line.voice != 0) { lyrics.duet = YES; break; }
+    if (!lyrics.plain.length) {
+        NSMutableArray *parts = [NSMutableArray array];
+        for (waLyricLine *line in lines) if (line.text.length) [parts addObject:line.text];
+        lyrics.plain = [parts componentsJoinedByString:@"\n"];
+    }
+    if (!lines.count && [waLyrics textIsInstrumentalOnly:lyrics.plain]) [lyrics markInstrumental];
+    return lyrics;
+}
+
+static NSString *waYAMLScalar(NSString *value) {
+    if (!value.length) return @"";
+    unichar quote = [value characterAtIndex:0];
+    if (quote != '\'' && quote != '"') return value;
+    NSMutableString *out = [NSMutableString string];
+    for (NSUInteger i = 1; i < value.length; i++) {
+        unichar c = [value characterAtIndex:i];
+        if (c == quote) {
+            if (quote == '\'' && i + 1 < value.length && [value characterAtIndex:i + 1] == '\'') {
+                [out appendString:@"'"];
+                i++;
+                continue;
+            }
+            break;
+        }
+        if (quote == '"' && c == '\\' && i + 1 < value.length) {
+            unichar n = [value characterAtIndex:++i];
+            if (n == 'n') [out appendString:@"\n"];
+            else if (n == 't') [out appendString:@"\t"];
+            else [out appendFormat:@"%C", n];
+            continue;
+        }
+        [out appendFormat:@"%C", c];
+    }
+    return out;
 }
 
 + (waLyrics *)lyricsFromLRC:(NSString *)lrc {

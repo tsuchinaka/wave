@@ -1,6 +1,7 @@
 #import "waLyricStage.h"
 #import <sys/sysctl.h>
 #import <CoreText/CoreText.h>
+#import <QuartzCore/CADisplayLink.h>
 
 typedef enum {
     waLyricProfile3GS = 0,
@@ -38,6 +39,7 @@ static waLyricProfile waLyricCurrentProfile(void) {
 @property (nonatomic, strong) UIFont *font;
 @property (nonatomic, assign) UITextAlignment alignment;
 @property (nonatomic, assign) CGFloat sungChars;
+@property (nonatomic, assign) waLyricLine *line;
 @property (nonatomic, assign) CGFloat lastWidth;
 @property (nonatomic, assign) CGFloat lastHeight;
 - (void)setText:(NSString *)text font:(UIFont *)font alignment:(UITextAlignment)alignment;
@@ -90,31 +92,39 @@ static waLyricProfile waLyricCurrentProfile(void) {
 - (void)rebuildIfNeeded {
     CGFloat width = CGRectGetWidth(self.bounds);
     CGFloat height = CGRectGetHeight(self.bounds);
-    if (width < 2.0 || height < 2.0 || !_text.length || !_font) return;
+    NSString *text = _text.length ? _text : @"";
+    if (width < 2.0 || height < 2.0 || !text.length || !_font) return;
     if (_frame && _setter && fabs(_lastWidth - width) < 0.5 && fabs(_lastHeight - height) < 0.5) return;
     [self clearFrame];
     _lastWidth = width;
     _lastHeight = height;
-    CTFontRef ctFont = CTFontCreateWithName((__bridge CFStringRef)_font.fontName, _font.pointSize, NULL);
-    if (!ctFont) ctFont = CTFontCreateWithName(CFSTR("Helvetica-Bold"), _font.pointSize, NULL);
-    CTTextAlignment align = kCTCenterTextAlignment;
-    if (_alignment == UITextAlignmentLeft) align = kCTLeftTextAlignment;
-    else if (_alignment == UITextAlignmentRight) align = kCTRightTextAlignment;
-    CTParagraphStyleSetting setting = { kCTParagraphStyleSpecifierAlignment, sizeof(CTTextAlignment), &align };
-    CTParagraphStyleRef style = CTParagraphStyleCreate(&setting, 1);
-    NSDictionary *attrs = [NSDictionary dictionaryWithObjectsAndKeys:
-                           (__bridge id)ctFont, (id)kCTFontAttributeName,
-                           (__bridge id)style, (id)kCTParagraphStyleAttributeName,
-                           (id)kCFBooleanTrue, (id)kCTForegroundColorFromContextAttributeName,
-                           nil];
-    NSAttributedString *attr = [[NSAttributedString alloc] initWithString:_text attributes:attrs];
-    _setter = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)attr);
-    CGMutablePathRef path = CGPathCreateMutable();
-    CGPathAddRect(path, NULL, CGRectMake(0.0, 0.0, width, height));
-    _frame = CTFramesetterCreateFrame(_setter, CFRangeMake(0, (CFIndex)_text.length), path, NULL);
-    CGPathRelease(path);
-    if (style) CFRelease(style);
-    if (ctFont) CFRelease(ctFont);
+    @try {
+        CTFontRef ctFont = CTFontCreateWithName((__bridge CFStringRef)(_font.fontName ?: @"Helvetica-Bold"), _font.pointSize, NULL);
+        if (!ctFont) ctFont = CTFontCreateWithName(CFSTR("Helvetica-Bold"), _font.pointSize, NULL);
+        CTTextAlignment align = kCTCenterTextAlignment;
+        if (_alignment == UITextAlignmentLeft) align = kCTLeftTextAlignment;
+        else if (_alignment == UITextAlignmentRight) align = kCTRightTextAlignment;
+        CTParagraphStyleSetting setting = { kCTParagraphStyleSpecifierAlignment, sizeof(CTTextAlignment), &align };
+        CTParagraphStyleRef style = CTParagraphStyleCreate(&setting, 1);
+        NSDictionary *attrs = [NSDictionary dictionaryWithObjectsAndKeys:
+                               (__bridge id)ctFont, (id)kCTFontAttributeName,
+                               (__bridge id)style, (id)kCTParagraphStyleAttributeName,
+                               (id)kCFBooleanTrue, (id)kCTForegroundColorFromContextAttributeName,
+                               nil];
+        NSAttributedString *attr = [[NSAttributedString alloc] initWithString:text attributes:attrs];
+        if (attr) _setter = CTFramesetterCreateWithAttributedString((__bridge CFAttributedStringRef)attr);
+        if (_setter) {
+            CGMutablePathRef path = CGPathCreateMutable();
+            CGPathAddRect(path, NULL, CGRectMake(0.0, 0.0, width, height));
+            _frame = CTFramesetterCreateFrame(_setter, CFRangeMake(0, (CFIndex)text.length), path, NULL);
+            CGPathRelease(path);
+        }
+        if (style) CFRelease(style);
+        if (ctFont) CFRelease(ctFont);
+    } @catch (NSException *exception) {
+        (void)exception;
+        [self clearFrame];
+    }
 }
 
 - (CGFloat)heightForWidth:(CGFloat)width {
@@ -202,7 +212,7 @@ static waLyricProfile waLyricCurrentProfile(void) {
 @property (nonatomic, strong) waKaraokeLane *altLane;
 @property (nonatomic, strong) UILabel *nextLabel;
 @property (nonatomic, strong) UILabel *emptyLabel;
-@property (nonatomic, strong) NSTimer *pulse;
+@property (nonatomic, strong) CADisplayLink *link;
 @property (nonatomic, assign) NSInteger lineIndex;
 @property (nonatomic, assign) BOOL duetLayout;
 @property (nonatomic, assign) waLyricProfile profile;
@@ -245,7 +255,8 @@ static waLyricProfile waLyricCurrentProfile(void) {
 }
 
 - (void)dealloc {
-    [self stopPulse];
+    [self.link invalidate];
+    self.link = nil;
 }
 
 - (UILabel *)lineLabel:(CGFloat)size color:(UIColor *)color {
@@ -266,13 +277,44 @@ static waLyricProfile waLyricCurrentProfile(void) {
 }
 
 - (void)stopPulse {
-    [self.pulse invalidate];
-    self.pulse = nil;
+    self.link.paused = YES;
+}
+
+- (void)armClock {
+    if (self.hidden || self.loading || !self.lyrics.lines.count) {
+        [self stopPulse];
+        return;
+    }
+    if (!self.link) {
+        self.link = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayFired:)];
+        self.link.frameInterval = self.profile == waLyricProfileA5 ? 1 : 2;
+        [self.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    }
+    self.link.paused = NO;
+    [self renderAtTime:[self heardTime:nil]];
+}
+
+- (NSTimeInterval)heardTime:(CADisplayLink *)link {
+    NSTimeInterval time = self.timeSource ? self.timeSource() : 0.0;
+    // One frame of lead: the pixels land as the syllable is heard, not after.
+    CFTimeInterval frame = link ? link.duration : 0.0;
+    if (frame < 0.008 || frame > 0.05) frame = self.profile == waLyricProfileA5 ? (1.0 / 60.0) : (1.0 / 30.0);
+    return time + frame;
+}
+
+- (void)displayFired:(CADisplayLink *)link {
+    if (self.hidden || self.loading || !self.lyrics.lines.count) {
+        link.paused = YES;
+        return;
+    }
+    @try { [self renderAtTime:[self heardTime:link]]; }
+    @catch (NSException *exception) { (void)exception; }
 }
 
 - (void)setHidden:(BOOL)hidden {
     [super setHidden:hidden];
     if (hidden) [self stopPulse];
+    else [self armClock];
 }
 
 - (void)setLoading:(BOOL)loading {
@@ -291,6 +333,7 @@ static waLyricProfile waLyricCurrentProfile(void) {
         self.currentHost.hidden = !has;
         self.prevLabel.hidden = !has;
         self.nextLabel.hidden = !has;
+        [self armClock];
     }
     [self setNeedsLayout];
 }
@@ -317,7 +360,7 @@ static waLyricProfile waLyricCurrentProfile(void) {
         self.emptyLabel.hidden = YES;
         self.emptyLabel.text = @"";
     }
-    if (!self.loading) [self setTime:0];
+    if (!self.loading) [self armClock];
     [self setNeedsLayout];
 }
 
@@ -325,6 +368,7 @@ static waLyricProfile waLyricCurrentProfile(void) {
     CGFloat size = [self maxCurrentSize];
     if (self.duetLayout && size > 16.0) size = 16.0;
     UIFont *font = [UIFont boldSystemFontOfSize:size];
+    if (!text.length) return font;
     while (size > 13.0) {
         CGSize box = [text sizeWithFont:font constrainedToSize:CGSizeMake(width, 160.0) lineBreakMode:UILineBreakModeWordWrap];
         if (box.height <= font.lineHeight * 3.4) break;
@@ -380,22 +424,31 @@ static waLyricProfile waLyricCurrentProfile(void) {
 }
 
 - (void)applyLine:(waLyricLine *)line toLane:(waKaraokeLane *)lane alignment:(UITextAlignment)alignment time:(NSTimeInterval)time {
-    if (!line || !lane) {
+    if (!lane) return;
+    if (!line) {
+        lane.line = nil;
         lane.hidden = YES;
         [lane setText:@"" font:[UIFont boldSystemFontOfSize:16.0] alignment:alignment];
         return;
     }
     lane.hidden = NO;
-    CGFloat colW = self.duetLayout ? (CGRectGetWidth(self.currentHost.bounds) - 8.0) / 2.0 : CGRectGetWidth(self.currentHost.bounds);
-    if (colW < 40.0) colW = 140.0;
-    UIFont *font = [self fontFittingText:line.text width:colW];
-    [lane setText:line.text font:font alignment:alignment];
+    if (lane.line != line || lane.alignment != alignment) {
+        lane.line = line;
+        CGFloat colW = self.duetLayout ? (CGRectGetWidth(self.currentHost.bounds) - 8.0) / 2.0 : CGRectGetWidth(self.currentHost.bounds);
+        if (colW < 40.0) colW = 140.0;
+        UIFont *font = [self fontFittingText:line.text.length ? line.text : @" " width:colW];
+        [lane setText:line.text.length ? line.text : @"" font:font alignment:alignment];
+    }
     waLyricCursor cursor = [self.lyrics cursorForLine:line atTime:time];
     CGFloat sung = (CGFloat)cursor.prefixChars + cursor.fraction * (CGFloat)cursor.unitChars;
     lane.sungChars = sung;
 }
 
 - (void)setTime:(NSTimeInterval)time {
+    [self renderAtTime:time];
+}
+
+- (void)renderAtTime:(NSTimeInterval)time {
     if (!self.lyrics.lines.count) {
         self.prevLabel.text = @"";
         self.nextLabel.text = @"";
@@ -403,7 +456,6 @@ static waLyricProfile waLyricCurrentProfile(void) {
         self.hasTime = NO;
         return;
     }
-    time += 0.18;
     NSArray *active = [self.lyrics linesAtTime:time];
     waLyricLine *lead = nil;
     waLyricLine *alt = nil;
@@ -465,34 +517,9 @@ static waLyricProfile waLyricCurrentProfile(void) {
         [self applyLine:alt toLane:self.altLane alignment:UITextAlignmentRight time:time];
     } else {
         self.altLane.hidden = YES;
+        self.altLane.line = nil;
     }
-    [self setNeedsLayout];
-    waLyricCursor pulseCursor = lead ? [self.lyrics cursorForLine:lead atTime:time] : (waLyricCursor){NSNotFound, 0, 0, 1};
-    [self schedulePulse:time fraction:pulseCursor.fraction];
-}
-
-- (void)schedulePulse:(NSTimeInterval)time fraction:(CGFloat)fraction {
-    [self stopPulse];
-    if (self.hidden || self.loading || !self.lyrics.lines.count) return;
-    NSTimeInterval delay;
-    if (fraction < 0.98f) {
-        if (self.profile == waLyricProfile3GS) delay = 0.08;
-        else if (self.profile == waLyricProfileA4) delay = 0.05;
-        else delay = 0.03;
-    } else {
-        NSTimeInterval next = [self.lyrics nextBoundaryAfter:time line:self.lineIndex word:NSNotFound];
-        delay = next - time - 0.03;
-        if (delay < 0.03) delay = 0.03;
-        if (delay > 0.35) delay = 0.35;
-    }
-    self.pulse = [NSTimer timerWithTimeInterval:delay target:self selector:@selector(pulseFire) userInfo:nil repeats:NO];
-    [[NSRunLoop mainRunLoop] addTimer:self.pulse forMode:NSRunLoopCommonModes];
-}
-
-- (void)pulseFire {
-    self.pulse = nil;
-    NSTimeInterval time = self.timeSource ? self.timeSource() : 0.0;
-    [self setTime:time];
+    if (lineChanged) [self setNeedsLayout];
 }
 
 @end
