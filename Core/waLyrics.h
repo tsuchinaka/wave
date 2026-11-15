@@ -36,10 +36,12 @@ typedef struct {
 - (NSInteger)lineIndexAtTime:(NSTimeInterval)time from:(NSInteger)hint;
 - (NSInteger)wordIndexInLine:(NSInteger)line atTime:(NSTimeInterval)time;
 - (NSInteger)wordIndexInLine:(NSInteger)line atTime:(NSTimeInterval)time from:(NSInteger)hint;
-- (NSTimeInterval)nextBoundaryAfter:(NSTimeInterval)time line:(NSInteger)line word:(NSInteger)word;
-- (waLyricCursor)cursorAtTime:(NSTimeInterval)time fromLine:(NSInteger)hint;
 - (waLyricCursor)cursorForLine:(waLyricLine *)line atTime:(NSTimeInterval)time;
 - (NSArray *)linesAtTime:(NSTimeInterval)time;
+- (NSInteger)activeLinesAtTime:(NSTimeInterval)time
+                          from:(NSInteger)hint
+                          lead:(waLyricLine **)leadOut
+                           alt:(waLyricLine **)altOut;
 - (NSDictionary *)plist;
 + (waLyrics *)lyricsFromDeezer:(NSDictionary *)result;
 + (waLyrics *)lyricsFromLRC:(NSString *)lrc;

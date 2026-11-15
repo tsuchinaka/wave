@@ -341,30 +341,6 @@ static NSTimeInterval waParseTimestamp(NSString *stamp) {
     return [self wordIndexForLine:[self.lines objectAtIndex:(NSUInteger)line] atTime:time from:hint];
 }
 
-- (NSTimeInterval)nextBoundaryAfter:(NSTimeInterval)time line:(NSInteger)line word:(NSInteger)word {
-    NSInteger count = (NSInteger)self.lines.count;
-    if (!count) return time + 0.4;
-    if (line < 0 || line >= count) {
-        return MAX(time + 0.05, ((waLyricLine *)[self.lines objectAtIndex:0]).start);
-    }
-    if (word >= 0) {
-        waLyricLine *item = [self.lines objectAtIndex:(NSUInteger)line];
-        NSInteger words = (NSInteger)item.words.count;
-        if (word < words) {
-            if (word + 1 < words) {
-                NSTimeInterval start = ((waLyricWord *)[item.words objectAtIndex:(NSUInteger)(word + 1)]).start;
-                if (start > time) return start;
-            }
-            NSTimeInterval end = ((waLyricWord *)[item.words objectAtIndex:(NSUInteger)word]).end;
-            if (end > time + 0.03) return end;
-        }
-    }
-    if (line + 1 < count) {
-        NSTimeInterval start = ((waLyricLine *)[self.lines objectAtIndex:(NSUInteger)(line + 1)]).start;
-        if (start > time) return start;
-    }
-    return time + 0.4;
-}
 
 - (NSArray *)linesAtTime:(NSTimeInterval)time {
     NSMutableArray *active = [NSMutableArray array];
@@ -380,20 +356,65 @@ static NSTimeInterval waParseTimestamp(NSString *stamp) {
     return active;
 }
 
-- (waLyricCursor)cursorAtTime:(NSTimeInterval)time fromLine:(NSInteger)hint {
-    waLyricCursor cursor;
-    cursor.line = NSNotFound;
-    cursor.prefixChars = 0;
-    cursor.unitChars = 0;
-    cursor.fraction = 0.0f;
-    NSInteger count = (NSInteger)self.lines.count;
-    if (!count) return cursor;
-    NSInteger line = [self lineIndexAtTime:time from:hint];
-    if (line < 0 || line >= count) return cursor;
-    cursor = [self cursorForLine:[self.lines objectAtIndex:(NSUInteger)line] atTime:time];
-    cursor.line = line;
-    return cursor;
+// Effective end for a line, matching lineIndexAtTime:from:. Lyrics with no end
+// stamp run until the next line starts.
+static NSTimeInterval waLineEnd(waLyrics *lyrics, NSInteger index) {
+    waLyricLine *line = [lyrics.lines objectAtIndex:(NSUInteger)index];
+    NSTimeInterval end = line.end;
+    NSInteger count = (NSInteger)lyrics.lines.count;
+    if (end <= line.start && index + 1 < count) {
+        end = ((waLyricLine *)[lyrics.lines objectAtIndex:(NSUInteger)(index + 1)]).start;
+    }
+    if (end <= line.start) end = line.start + 2.0;
+    return end;
 }
+
+// The karaoke stage asks for this on every display frame. Scanning a window
+// around the current line keeps it O(1) and allocates nothing; the previous
+// version walked every line twice and built an NSMutableArray per frame.
+- (NSInteger)activeLinesAtTime:(NSTimeInterval)time
+                          from:(NSInteger)hint
+                          lead:(waLyricLine **)leadOut
+                           alt:(waLyricLine **)altOut {
+    if (leadOut) *leadOut = nil;
+    if (altOut) *altOut = nil;
+    NSInteger count = (NSInteger)self.lines.count;
+    if (!count) return NSNotFound;
+    NSInteger index = [self lineIndexAtTime:time from:hint];
+    NSInteger from = 0;
+    NSInteger to = count - 1;
+    if (index != NSNotFound) {
+        from = MAX(0, index - 6);
+        to = MIN(count - 1, index + 6);
+    }
+    waLyricLine *lead = nil;
+    waLyricLine *alt = nil;
+    NSInteger leadIndex = NSNotFound;
+    for (NSInteger i = from; i <= to; i++) {
+        waLyricLine *line = [self.lines objectAtIndex:(NSUInteger)i];
+        if (![line isKindOfClass:[waLyricLine class]]) continue;
+        if (time < line.start) break;
+        if (time >= waLineEnd(self, i)) continue;
+        if (line.voice == 0 && !lead) {
+            lead = line;
+            leadIndex = i;
+        } else if (!alt) {
+            alt = line;
+        }
+    }
+    if (!lead && index != NSNotFound && index < count) {
+        waLyricLine *line = [self.lines objectAtIndex:(NSUInteger)index];
+        if ([line isKindOfClass:[waLyricLine class]]) {
+            lead = line;
+            leadIndex = index;
+        }
+    }
+    if (lead == alt) alt = nil;
+    if (leadOut) *leadOut = lead;
+    if (altOut) *altOut = alt;
+    return lead ? leadIndex : NSNotFound;
+}
+
 
 - (waLyricCursor)cursorForLine:(waLyricLine *)item atTime:(NSTimeInterval)time {
     waLyricCursor cursor;

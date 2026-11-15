@@ -214,6 +214,7 @@ static waLyricProfile waLyricCurrentProfile(void) {
 @property (nonatomic, strong) UILabel *emptyLabel;
 @property (nonatomic, strong) CADisplayLink *link;
 @property (nonatomic, assign) NSInteger lineIndex;
+@property (nonatomic, assign) NSInteger hintIndex;
 @property (nonatomic, assign) BOOL duetLayout;
 @property (nonatomic, assign) waLyricProfile profile;
 @property (nonatomic, assign) NSTimeInterval lastTime;
@@ -227,6 +228,7 @@ static waLyricProfile waLyricCurrentProfile(void) {
         self.backgroundColor = [UIColor clearColor];
         self.clipsToBounds = YES;
         _lineIndex = NSNotFound;
+        _hintIndex = NSNotFound;
         _profile = waLyricCurrentProfile();
 
         _prevLabel = [self lineLabel:15.0 color:[UIColor colorWithWhite:1.0 alpha:0.38]];
@@ -341,6 +343,7 @@ static waLyricProfile waLyricCurrentProfile(void) {
 - (void)setLyrics:(waLyrics *)lyrics {
     _lyrics = lyrics;
     _lineIndex = NSNotFound;
+    _hintIndex = NSNotFound;
     [self stopPulse];
     BOOL hasLines = lyrics.lines.count > 0;
     self.currentHost.hidden = !hasLines || self.loading;
@@ -456,26 +459,15 @@ static waLyricProfile waLyricCurrentProfile(void) {
         self.hasTime = NO;
         return;
     }
-    NSArray *active = [self.lyrics linesAtTime:time];
     waLyricLine *lead = nil;
     waLyricLine *alt = nil;
-    for (waLyricLine *line in active) {
-        if (![line isKindOfClass:[waLyricLine class]]) continue;
-        if (line.voice == 0 && !lead) lead = line;
-        else if (!alt) alt = line;
-    }
-    if (!lead && active.count) lead = [active objectAtIndex:0];
+    NSInteger leadIndex = [self.lyrics activeLinesAtTime:time from:self.hintIndex lead:&lead alt:&alt];
+    if (leadIndex != NSNotFound) self.hintIndex = leadIndex;
     if (lead == alt) alt = nil;
     BOOL duet = (self.lyrics.duet || alt != nil);
     self.duetLayout = duet;
 
-    NSInteger leadIndex = NSNotFound;
     NSInteger count = (NSInteger)self.lyrics.lines.count;
-    if (lead) {
-        for (NSInteger i = 0; i < count; i++) {
-            if ([self.lyrics.lines objectAtIndex:(NSUInteger)i] == lead) { leadIndex = i; break; }
-        }
-    }
     BOOL lineChanged = (leadIndex != self.lineIndex);
     self.lineIndex = leadIndex;
     if (lineChanged) {
