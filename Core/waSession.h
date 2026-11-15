@@ -101,6 +101,7 @@ extern NSString * const waSessionAuthDidChangeNotification;
 - (void)artistFans:(NSString *)artistID completion:(void (^)(NSArray *users, NSError *error))completion;
 - (void)artistPlaylists:(NSString *)artistID completion:(void (^)(NSArray *playlists, NSError *error))completion;
 - (void)artistRadio:(NSString *)artistID completion:(void (^)(NSArray *tracks, NSError *error))completion;
+- (void)geniusForTrack:(waTrack *)track completion:(void (^)(NSArray *tracks, NSError *error))completion;
 - (void)artistComments:(NSString *)artistID completion:(void (^)(NSArray *comments, NSError *error))completion;
 - (void)chartWithIdentifier:(NSString *)chartID completion:(void (^)(waChart *chart, NSError *error))completion;
 - (void)editorialsWithCompletion:(void (^)(NSArray *editorials, NSError *error))completion;

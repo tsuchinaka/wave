@@ -48,11 +48,15 @@ static NSError *waErr(NSString *message, NSInteger code) {
 @property (nonatomic, readwrite) waQuality maximumQuality;
 @property (nonatomic, strong) NSString *userIdentifier;
 @property (nonatomic, assign) BOOL losslessProbed;
+@property (nonatomic, assign) NSUInteger lyricsGeneration;
+@property (nonatomic, assign) dispatch_queue_t lyricsQueue;
+@property (nonatomic, strong) NSMutableDictionary *lyricsCache;
 - (void)finishHome:(NSMutableArray *)sections radios:(NSArray *)radios completion:(void (^)(NSArray *, NSError *))completion;
-- (void)fetchExternalLyrics:(waTrack *)track fallback:(waLyrics *)fallback completion:(void (^)(waLyrics *, NSError *))completion;
+- (void)fetchExternalLyrics:(waTrack *)track generation:(NSUInteger)generation completion:(void (^)(waLyrics *, NSError *))completion;
 - (NSString *)lyricsQueryEscape:(NSString *)value;
-- (id)lyricsJSONAtURL:(NSString *)urlString;
-- (waLyrics *)lyricsFromLRCLIBJSON:(id)json;
+- (id)lyricsJSONAtURL:(NSString *)urlString generation:(NSUInteger)generation;
+- (waLyrics *)lyricsFromLRCLIBRecord:(NSDictionary *)record;
+- (NSDictionary *)bestLRCLIBRecord:(id)json duration:(NSTimeInterval)duration;
 - (void)fetchDiscography:(NSString *)artistID start:(NSUInteger)start acc:(NSMutableArray *)acc seen:(NSMutableSet *)seen completion:(void (^)(NSArray *, NSError *))completion;
 - (NSArray *)albumsFromGateway:(id)result;
 @end
@@ -70,6 +74,8 @@ static NSError *waErr(NSString *message, NSInteger code) {
     if ((self = [super init])) {
         _maximumQuality = waQualityMP3320;
         _preferredQuality = (waQuality)[[NSUserDefaults standardUserDefaults] integerForKey:waQualityKey];
+        _lyricsQueue = dispatch_queue_create("wave.lyrics", DISPATCH_QUEUE_SERIAL);
+        _lyricsCache = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -756,133 +762,244 @@ static NSError *waErr(NSString *message, NSInteger code) {
     return result;
 }
 
-- (id)lyricsJSONAtURL:(NSString *)urlString {
+- (id)lyricsJSONAtURL:(NSString *)urlString generation:(NSUInteger)generation {
     if (!urlString.length) return nil;
+    if (generation != self.lyricsGeneration) return nil;
     NSURL *url = [NSURL URLWithString:urlString];
     if (!url) return nil;
-    NSDictionary *headers = @{@"User-Agent": @"Wave/1.0 (iOS 5.1; lyrics)"};
+    NSDictionary *headers = @{@"User-Agent": @"wave/0.3.54 (https://github.com/tsuchinaka/wave)",
+                              @"X-User-Agent": @"wave/0.3.54 (https://github.com/tsuchinaka/wave)"};
     NSError *error = nil;
-    NSDictionary *response = [waTLS requestURL:url method:@"GET" headers:headers body:nil timeout:14.0 verify:YES error:&error];
-    if (!response) {
+    NSDictionary *response = [waTLS requestURL:url method:@"GET" headers:headers body:nil timeout:6.0 verify:YES error:&error];
+    if (!response && error.code == 9) {
+        if (generation != self.lyricsGeneration) return nil;
         [[waLog shared] log:@"lyrics tls retry %@", error.localizedDescription];
         error = nil;
-        response = [waTLS requestURL:url method:@"GET" headers:headers body:nil timeout:14.0 verify:NO error:&error];
+        response = [waTLS requestURL:url method:@"GET" headers:headers body:nil timeout:6.0 verify:NO error:&error];
     }
+    if (generation != self.lyricsGeneration) return nil;
+    if (![response isKindOfClass:[NSDictionary class]]) return nil;
     NSInteger status = [response[@"status"] integerValue];
-    NSData *body = response[@"body"];
+    NSData *body = [response[@"body"] isKindOfClass:[NSData class]] ? response[@"body"] : nil;
     [[waLog shared] log:@"lyrics http %ld bytes=%lu %@", (long)status, (unsigned long)body.length, url.host];
-    if (status == 404 || !body.length) return nil;
-    return [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL];
+    if (status == 404 || status < 200 || status >= 300 || !body.length) return nil;
+    id json = nil;
+    @try { json = [NSJSONSerialization JSONObjectWithData:body options:0 error:NULL]; }
+    @catch (NSException *exception) {
+        [[waLog shared] log:@"lyrics json %@", exception.reason];
+        return nil;
+    }
+    return json;
 }
 
-- (waLyrics *)lyricsFromLRCLIBJSON:(id)json {
-    NSMutableArray *records = [NSMutableArray array];
-    if ([json isKindOfClass:[NSDictionary class]]) [records addObject:json];
-    else if ([json isKindOfClass:[NSArray class]]) [records addObjectsFromArray:json];
-    waLyrics *plainOnly = nil;
-    waLyrics *instrumental = nil;
+- (waLyrics *)parseLyricsSafely:(waLyrics *(^)(void))block {
+    if (!block) return nil;
+    waLyrics *parsed = nil;
+    @try { parsed = block(); }
+    @catch (NSException *exception) {
+        [[waLog shared] log:@"lyrics parse %@", exception.reason];
+        parsed = nil;
+    }
+    return parsed;
+}
+
+- (waLyrics *)lyricsFromLRCLIBRecord:(NSDictionary *)record {
+    if (![record isKindOfClass:[NSDictionary class]]) return nil;
+    id flag = record[@"instrumental"];
+    BOOL marked = [flag respondsToSelector:@selector(boolValue)] && [flag boolValue];
+    NSString *file = [record[@"lyricsfile"] isKindOfClass:[NSString class]] ? record[@"lyricsfile"] : nil;
+    NSString *synced = [record[@"syncedLyrics"] isKindOfClass:[NSString class]] ? record[@"syncedLyrics"] : nil;
+    NSString *plain = [record[@"plainLyrics"] isKindOfClass:[NSString class]] ? record[@"plainLyrics"] : nil;
+    if (file.length && file.length < 400000) {
+        waLyrics *parsed = [self parseLyricsSafely:^{ return [waLyrics lyricsFromLyricsfile:file]; }];
+        if (parsed.wordTimed && parsed.lines.count) return parsed;
+        if (parsed.lines.count || parsed.instrumental) return parsed;
+    }
+    if (marked || [waLyrics textIsInstrumentalOnly:synced] || [waLyrics textIsInstrumentalOnly:plain]) {
+        waLyrics *instrumental = [[waLyrics alloc] init];
+        instrumental.source = @"lrclib";
+        [instrumental markInstrumental];
+        return instrumental;
+    }
+    if (synced.length) {
+        waLyrics *parsed = [self parseLyricsSafely:^{ return [waLyrics lyricsFromLRC:synced]; }];
+        if (parsed.lines.count) return parsed;
+    }
+    if (plain.length) {
+        waLyrics *parsed = [self parseLyricsSafely:^{ return [waLyrics lyricsFromLRC:plain]; }];
+        if (!parsed.lines.count) {
+            parsed = [[waLyrics alloc] init];
+            parsed.plain = plain;
+            parsed.source = @"lrclib";
+        }
+        return parsed;
+    }
+    return nil;
+}
+
+- (NSDictionary *)bestLRCLIBRecord:(id)json duration:(NSTimeInterval)duration {
+    NSArray *records = nil;
+    if ([json isKindOfClass:[NSDictionary class]]) records = [NSArray arrayWithObject:json];
+    else if ([json isKindOfClass:[NSArray class]]) records = json;
+    NSDictionary *best = nil;
+    NSInteger bestScore = NSIntegerMin;
     for (id record in records) {
         if (![record isKindOfClass:[NSDictionary class]]) continue;
-        id flag = record[@"instrumental"];
-        BOOL marked = [flag respondsToSelector:@selector(boolValue)] && [flag boolValue];
-        NSString *synced = record[@"syncedLyrics"];
-        NSString *plain = [record[@"plainLyrics"] isKindOfClass:[NSString class]] ? record[@"plainLyrics"] : nil;
-        if (marked || [waLyrics textIsInstrumentalOnly:synced] || [waLyrics textIsInstrumentalOnly:plain]) {
-            if (!instrumental) {
-                instrumental = [[waLyrics alloc] init];
-                instrumental.source = @"lrclib";
-                [instrumental markInstrumental];
-            }
-            continue;
+        BOOL word = [record[@"hasWordSync"] boolValue];
+        BOOL synced = [record[@"hasSyncedLyrics"] boolValue] || ([record[@"syncedLyrics"] isKindOfClass:[NSString class]] && [record[@"syncedLyrics"] length]);
+        BOOL plain = [record[@"hasPlainLyrics"] boolValue] || ([record[@"plainLyrics"] isKindOfClass:[NSString class]] && [record[@"plainLyrics"] length]);
+        BOOL file = [record[@"lyricsfile"] isKindOfClass:[NSString class]] && [record[@"lyricsfile"] length];
+        NSInteger score = word || file ? 100 : (synced ? 40 : (plain ? 10 : 0));
+        double recDur = [record[@"duration"] doubleValue];
+        if (duration > 1.0 && recDur > 0.0) {
+            double delta = fabs(recDur - duration);
+            if (delta <= 2.0) score += 80;
+            else if (delta <= 5.0) score += 20;
+            else score -= 40;
+            score -= (NSInteger)delta;
         }
-        if ([synced isKindOfClass:[NSString class]] && synced.length) {
-            waLyrics *parsed = [waLyrics lyricsFromLRC:synced];
-            if (parsed.lines.count) return parsed;
-        }
-        if (plain.length && !plainOnly) {
-            plainOnly = [waLyrics lyricsFromLRC:plain];
-            if (!plainOnly.lines.count) {
-                plainOnly = [[waLyrics alloc] init];
-                plainOnly.plain = plain;
-            }
+        if (score > bestScore) {
+            best = record;
+            bestScore = score;
         }
     }
-    return plainOnly ?: instrumental;
+    return best;
 }
 
-- (void)fetchExternalLyrics:(waTrack *)track fallback:(waLyrics *)fallback completion:(void (^)(waLyrics *, NSError *))completion {
+- (void)fetchExternalLyrics:(waTrack *)track generation:(NSUInteger)generation completion:(void (^)(waLyrics *, NSError *))completion {
+    if (!track.title.length && !track.artistName.length) {
+        if (completion) completion(nil, waErr(@"Lyrics not available.", 404));
+        return;
+    }
     NSString *artist = [self lyricsQueryEscape:track.artistName];
     NSString *title = [self lyricsQueryEscape:track.title];
     NSString *album = [self lyricsQueryEscape:track.albumTitle];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    NSInteger duration = (NSInteger)(track.duration + 0.5);
+    if (duration < 1 || duration > 3600) duration = 0;
+    dispatch_async(self.lyricsQueue, ^{
         waLyrics *parsed = nil;
-        NSString *search = [NSString stringWithFormat:@"https://lrclib.net/api/search?track_name=%@&artist_name=%@", title, artist];
-        parsed = [self lyricsFromLRCLIBJSON:[self lyricsJSONAtURL:search]];
-        if (!parsed.lines.count && !parsed.plain.length && !parsed.instrumental) {
-            NSString *q = [NSString stringWithFormat:@"https://lrclib.net/api/search?q=%@%%20%@", artist, title];
-            parsed = [self lyricsFromLRCLIBJSON:[self lyricsJSONAtURL:q]];
-        }
-        if (!parsed.lines.count && !parsed.plain.length && !parsed.instrumental) {
+        @try {
+            if (generation != self.lyricsGeneration) return;
             NSMutableString *getURL = [NSMutableString stringWithFormat:@"https://lrclib.net/api/get?artist_name=%@&track_name=%@", artist, title];
             if (album.length) [getURL appendFormat:@"&album_name=%@", album];
-            parsed = [self lyricsFromLRCLIBJSON:[self lyricsJSONAtURL:getURL]];
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (parsed.lines.count || parsed.plain.length || parsed.instrumental) {
-                if (completion) completion(parsed, nil);
-            } else if (fallback.lines.count || fallback.plain.length || fallback.instrumental) {
-                if (completion) completion(fallback, nil);
-            } else if (completion) {
-                completion(nil, waErr(@"Lyrics not available.", 404));
+            if (duration) [getURL appendFormat:@"&duration=%ld", (long)duration];
+            parsed = [self lyricsFromLRCLIBRecord:[self bestLRCLIBRecord:[self lyricsJSONAtURL:getURL generation:generation] duration:track.duration]];
+            if (generation != self.lyricsGeneration) return;
+            if (!parsed.wordTimed && !parsed.lines.count && !parsed.plain.length && !parsed.instrumental) {
+                NSString *search = [NSString stringWithFormat:@"https://lrclib.net/api/v2/search?track_name=%@&artist_name=%@", title, artist];
+                NSDictionary *summary = [self bestLRCLIBRecord:[self lyricsJSONAtURL:search generation:generation] duration:track.duration];
+                if (generation != self.lyricsGeneration) return;
+                NSString *recordID = [summary[@"id"] respondsToSelector:@selector(stringValue)] ? [summary[@"id"] stringValue] : nil;
+                if (recordID.length) {
+                    NSString *byID = [NSString stringWithFormat:@"https://lrclib.net/api/get/%@", recordID];
+                    waLyrics *full = [self lyricsFromLRCLIBRecord:[self lyricsJSONAtURL:byID generation:generation]];
+                    if (full.wordTimed || full.lines.count || full.plain.length || full.instrumental) parsed = full;
+                }
             }
+            if (parsed.wordTimed) {
+                NSUInteger words = 0;
+                for (waLyricLine *line in parsed.lines) {
+                    if ([line isKindOfClass:[waLyricLine class]]) words += line.words.count;
+                }
+                [[waLog shared] log:@"lyrics word-sync lines=%lu words=%lu", (unsigned long)parsed.lines.count, (unsigned long)words];
+            }
+        } @catch (NSException *exception) {
+            [[waLog shared] log:@"lyrics fetch %@", exception.reason];
+            parsed = nil;
+        }
+        if (generation != self.lyricsGeneration) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.lyricsGeneration) return;
+            if (completion) completion(parsed, parsed ? nil : waErr(@"Lyrics not available.", 404));
         });
     });
 }
 
+- (waLyrics *)bestLyricsFromDeezer:(waLyrics *)deezer backup:(waLyrics *)backup {
+    if (backup.wordTimed && backup.lines.count) return backup;
+    if (deezer.wordTimed && deezer.lines.count) return deezer;
+    if (deezer.lines.count) return deezer;
+    if (backup.lines.count) return backup;
+    if (deezer.instrumental) return deezer;
+    if (backup.instrumental) return backup;
+    if (backup.plain.length) return backup;
+    if (deezer.plain.length) return deezer;
+    return nil;
+}
+
 - (void)lyricsForTrack:(waTrack *)track completion:(void (^)(waLyrics *, NSError *))completion {
-    if (!track.title.length && !track.identifier.length) {
-        if (completion) completion(nil, waErr(@"No track id.", 400));
+    if (!track || (!track.title.length && !track.identifier.length && !track.artistName.length)) {
+        if (completion) completion(nil, waErr(@"No track.", 400));
         return;
     }
-    waLyrics *local = [[waDownloader shared] localLyricsForTrackID:track.identifier];
-    if (local.lines.count || local.plain.length || local.instrumental) {
-        if (completion) completion(local, nil);
-        return;
-    }
-    __block waLyrics *fromDeezer = nil;
-    __block waLyrics *fromBackup = nil;
-    dispatch_group_t group = dispatch_group_create();
-    dispatch_group_enter(group);
-    [self fetchExternalLyrics:track fallback:nil completion:^(waLyrics *lyrics, NSError *error) {
+    NSString *cacheKey = track.identifier.length ? track.identifier : [NSString stringWithFormat:@"%@|%@", track.artistName ?: @"", track.title ?: @""];
+    waLyrics *memory = cacheKey.length ? self.lyricsCache[cacheKey] : nil;
+    waLyrics *local = memory ?: [[waDownloader shared] localLyricsForTrackID:track.identifier];
+    BOOL cached = local.lines.count || local.plain.length || local.instrumental;
+    if (cached && completion) completion(local, nil);
+    if (cached && local.wordTimed) return;
+    NSUInteger generation = ++self.lyricsGeneration;
+    NSMutableDictionary *gate = [NSMutableDictionary dictionary];
+    gate[@"done"] = @NO;
+    void (^finish)(waLyrics *) = ^(waLyrics *lyrics) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.lyricsGeneration) return;
+            if ([gate[@"done"] boolValue]) return;
+            gate[@"done"] = @YES;
+            waLyrics *best = lyrics;
+            if (best && cacheKey.length) {
+                self.lyricsCache[cacheKey] = best;
+                while (self.lyricsCache.count > 24) {
+                    NSString *first = self.lyricsCache.allKeys[0];
+                    if (first) [self.lyricsCache removeObjectForKey:first];
+                    else break;
+                }
+            }
+            if (best && track.identifier.length && [[waDownloader shared] isDownloadedTrackID:track.identifier]) {
+                [[waDownloader shared] storeLyrics:best forTrackID:track.identifier];
+            }
+            if (completion) completion(best, best ? nil : waErr(@"Lyrics not available.", 404));
+        });
+    };
+    void (^consider)(void) = ^{
+        if (generation != self.lyricsGeneration) return;
+        if ([gate[@"done"] boolValue]) return;
+        waLyrics *best = [self bestLyricsFromDeezer:gate[@"deezer"] backup:gate[@"lrclib"]];
+        BOOL word = best.wordTimed && best.lines.count;
+        BOOL both = [gate[@"deezerDone"] boolValue] && [gate[@"lrclibDone"] boolValue];
+        if (word || both) finish(best);
+    };
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (generation != self.lyricsGeneration) return;
+        if ([gate[@"done"] boolValue]) return;
+        [[waLog shared] log:@"lyrics timeout"];
+        finish([self bestLyricsFromDeezer:gate[@"deezer"] backup:gate[@"lrclib"]]);
+    });
+    [self fetchExternalLyrics:track generation:generation completion:^(waLyrics *lyrics, NSError *error) {
         (void)error;
-        fromBackup = lyrics;
-        dispatch_group_leave(group);
+        if (generation != self.lyricsGeneration) return;
+        if (lyrics) gate[@"lrclib"] = lyrics;
+        gate[@"lrclibDone"] = @YES;
+        consider();
     }];
     if (track.identifier.length) {
-        dispatch_group_enter(group);
         [[waDZAPI shared] callMethod:@"song.getLyrics" params:@{@"sng_id": track.identifier} completion:^(NSDictionary *result, NSError *error) {
-            if (!error) fromDeezer = [waLyrics lyricsFromDeezer:result];
-            dispatch_group_leave(group);
+            if (generation != self.lyricsGeneration) return;
+            dispatch_async(self.lyricsQueue, ^{
+                waLyrics *parsed = nil;
+                if (!error) parsed = [self parseLyricsSafely:^{ return [waLyrics lyricsFromDeezer:result]; }];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation != self.lyricsGeneration) return;
+                    if (parsed) gate[@"deezer"] = parsed;
+                    gate[@"deezerDone"] = @YES;
+                    consider();
+                });
+            });
         }];
+    } else {
+        gate[@"deezerDone"] = @YES;
+        consider();
     }
-    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
-        waLyrics *best = nil;
-        if (fromBackup.wordTimed && fromBackup.lines.count) best = fromBackup;
-        else if (fromDeezer.wordTimed && fromDeezer.lines.count) best = fromDeezer;
-        else if (fromDeezer.lines.count) best = fromDeezer;
-        else if (fromBackup.lines.count) best = fromBackup;
-        else if (fromDeezer.instrumental) best = fromDeezer;
-        else if (fromBackup.instrumental) best = fromBackup;
-        else if (fromBackup.plain.length) best = fromBackup;
-        else if (fromDeezer.plain.length) best = fromDeezer;
-        if (best && track.identifier.length && [[waDownloader shared] isDownloadedTrackID:track.identifier]) {
-            [[waDownloader shared] storeLyrics:best forTrackID:track.identifier];
-        }
-        if (completion) completion(best, best ? nil : waErr(@"Lyrics not available.", 404));
-#if !OS_OBJECT_USE_OBJC
-        dispatch_release(group);
-#endif
-    });
 }
 
 #pragma mark - library
@@ -1269,6 +1386,85 @@ static NSError *waErr(NSString *message, NSInteger code) {
 - (void)artistRadio:(NSString *)artistID completion:(void (^)(NSArray *, NSError *))completion {
     [[waDZAPI shared] getPath:[NSString stringWithFormat:@"/artist/%@/radio", artistID] params:@{@"limit": @"50"} completion:^(NSDictionary *json, NSError *error) {
         if (completion) completion(error ? nil : [self itemsFrom:waArray(json, nil) kind:waTrackType], error);
+    }];
+}
+
+- (void)geniusForTrack:(waTrack *)track completion:(void (^)(NSArray *, NSError *))completion {
+    if (!track.identifier.length) {
+        if (completion) completion(nil, waErr(@"No track.", 400));
+        return;
+    }
+    if (!track.artistIdentifier.length) {
+        [self track:track.identifier completion:^(waTrack *full, NSError *error) {
+            if (full) [track mergeFrom:full];
+            if (!track.artistIdentifier.length) {
+                if (completion) completion(nil, error ?: waErr(@"No artist.", 404));
+                return;
+            }
+            [self geniusForTrack:track completion:completion];
+        }];
+        return;
+    }
+    NSString *artistID = track.artistIdentifier;
+    NSString *seedID = track.identifier;
+    [self artistRadio:artistID completion:^(NSArray *radio, NSError *error) {
+        NSMutableArray *batch = [NSMutableArray array];
+        NSMutableSet *seen = [NSMutableSet setWithObject:seedID];
+        for (waTrack *item in radio) {
+            if (![item isKindOfClass:[waTrack class]] || !item.identifier.length) continue;
+            if ([seen containsObject:item.identifier]) continue;
+            item.genius = YES;
+            [seen addObject:item.identifier];
+            [batch addObject:item];
+            if (batch.count >= 12) break;
+        }
+        if (batch.count >= 8) {
+            if (completion) completion(batch, nil);
+            return;
+        }
+        [self artistRelated:artistID completion:^(NSArray *artists, NSError *relatedError) {
+            (void)relatedError;
+            NSMutableArray *ids = [NSMutableArray array];
+            for (id obj in artists) {
+                if (![obj isKindOfClass:[waArtist class]]) continue;
+                NSString *relatedID = [(waArtist *)obj identifier];
+                if (!relatedID.length || [relatedID isEqualToString:artistID]) continue;
+                [ids addObject:relatedID];
+                if (ids.count >= 4) break;
+            }
+            if (!ids.count) {
+                if (completion) completion(batch.count ? batch : nil, batch.count ? nil : error);
+                return;
+            }
+            __block NSUInteger left = ids.count;
+            NSMutableArray *tops = [NSMutableArray arrayWithCapacity:ids.count];
+            for (NSUInteger i = 0; i < ids.count; i++) [tops addObject:[NSArray array]];
+            for (NSUInteger i = 0; i < ids.count; i++) {
+                [[waSession shared] artistTop:[ids objectAtIndex:i] completion:^(NSArray *top, NSError *topError) {
+                    (void)topError;
+                    if (top) [tops replaceObjectAtIndex:i withObject:top];
+                    if (--left > 0) return;
+                    NSUInteger row = 0;
+                    BOOL grew = YES;
+                    while (grew && batch.count < 15) {
+                        grew = NO;
+                        for (NSArray *list in tops) {
+                            if (row >= list.count) continue;
+                            waTrack *item = [list objectAtIndex:row];
+                            if (![item isKindOfClass:[waTrack class]] || !item.identifier.length) continue;
+                            if ([seen containsObject:item.identifier]) continue;
+                            item.genius = YES;
+                            [seen addObject:item.identifier];
+                            [batch addObject:item];
+                            grew = YES;
+                            if (batch.count >= 15) break;
+                        }
+                        row++;
+                    }
+                    if (completion) completion(batch.count ? batch : nil, batch.count ? nil : error);
+                }];
+            }
+        }];
     }];
 }
 
