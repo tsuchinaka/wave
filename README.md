@@ -10,7 +10,7 @@ Deezer client for iOS 5.1 (armv7), built with Theos. Package `com.sokubit.wave`,
 
 SDK: `/home/main/theos/sdks/iPhoneOS5.1.sdk` (`Makefile` `TARGET := iphone:clang:5.1:5.1`). `./deploy.sh` builds and installs on the device. `./deploy.sh --clean` forces a clean build.
 
-Docs for agents live in `docs/` and `AGENTS.md`.
+Docs live in `docs/`.
 
 ## Layout
 
