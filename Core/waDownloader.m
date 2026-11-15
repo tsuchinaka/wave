@@ -5,7 +5,9 @@
 #import "waSession.h"
 #import "waImageCache.h"
 #import "waLyrics.h"
+#import "waTags.h"
 #import <UIKit/UIKit.h>
+#import <ImageIO/ImageIO.h>
 
 NSString * const waDownloaderDidChangeNotification = @"waDownloaderDidChangeNotification";
 static NSString * const waDownloadSortKey = @"wave.downloadSort";
@@ -13,6 +15,10 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
 @interface waDownload ()
 - (NSDictionary *)plist;
 + (waDownload *)downloadFromPlist:(NSDictionary *)dict;
+- (NSDictionary *)manifestEntry;
++ (waDownload *)downloadFromManifestEntry:(NSDictionary *)entry;
+- (void)applyTags:(NSDictionary *)tags;
+- (NSDictionary *)tagFields;
 @end
 
 @implementation waDownload
@@ -51,6 +57,100 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
         if (!download.trackID.length) download.trackID = download.track.identifier;
     }
     return download;
+}
+
+// The JSON form: only what the library needs to describe the file. State that
+// the tags already carry stays in the tags, not here.
+- (NSDictionary *)manifestEntry {
+    NSMutableDictionary *entry = [NSMutableDictionary dictionary];
+    if (self.trackID.length) entry[@"id"] = self.trackID;
+    if (self.fileName.length) entry[@"file"] = [@"media/" stringByAppendingString:self.fileName];
+    waTrack *track = self.track;
+    if (track.title.length) entry[@"title"] = track.title;
+    if (track.artistName.length) entry[@"artist"] = track.artistName;
+    if (track.artistIdentifier.length) entry[@"artistID"] = track.artistIdentifier;
+    if (track.albumTitle.length) entry[@"album"] = track.albumTitle;
+    if (track.albumIdentifier.length) entry[@"albumID"] = track.albumIdentifier;
+    if (track.trackPosition > 0) entry[@"track"] = [NSNumber numberWithInteger:track.trackPosition];
+    if (track.diskNumber > 0) entry[@"disc"] = [NSNumber numberWithInteger:track.diskNumber];
+    if (track.releaseDate.length) entry[@"year"] = track.releaseDate;
+    if (track.duration > 0.0) entry[@"duration"] = [NSNumber numberWithDouble:track.duration];
+    if (self.format.length) entry[@"format"] = self.format;
+    if (self.bytesExpected > 0) entry[@"bytes"] = [NSNumber numberWithUnsignedLongLong:self.bytesExpected];
+    entry[@"added"] = [NSNumber numberWithLongLong:(long long)self.addedAt];
+    if (self.hasLyrics) entry[@"lyrics"] = [NSNumber numberWithBool:YES];
+    return entry;
+}
+
++ (waDownload *)downloadFromManifestEntry:(NSDictionary *)entry {
+    if (![entry isKindOfClass:[NSDictionary class]]) return nil;
+    waDownload *download = [[waDownload alloc] init];
+    download.trackID = [entry[@"id"] isKindOfClass:[NSString class]] ? entry[@"id"] : nil;
+    if (!download.trackID.length) return nil;
+    NSString *file = [entry[@"file"] isKindOfClass:[NSString class]] ? entry[@"file"] : nil;
+    if (file.length) download.fileName = [file lastPathComponent];
+    download.format = [entry[@"format"] isKindOfClass:[NSString class]] ? entry[@"format"] : nil;
+    download.bytesExpected = [entry[@"bytes"] unsignedLongLongValue];
+    download.addedAt = (NSTimeInterval)[entry[@"added"] longLongValue];
+    download.hasLyrics = [entry[@"lyrics"] boolValue];
+    download.state = waDownloadCompleted;
+    download.progress = 1.0f;
+    waTrack *track = [[waTrack alloc] init];
+    track.identifier = download.trackID;
+    if ([entry[@"title"] isKindOfClass:[NSString class]]) track.title = entry[@"title"];
+    if ([entry[@"artist"] isKindOfClass:[NSString class]]) track.artistName = entry[@"artist"];
+    if ([entry[@"artistID"] isKindOfClass:[NSString class]]) track.artistIdentifier = entry[@"artistID"];
+    if ([entry[@"album"] isKindOfClass:[NSString class]]) track.albumTitle = entry[@"album"];
+    if ([entry[@"albumID"] isKindOfClass:[NSString class]]) track.albumIdentifier = entry[@"albumID"];
+    if ([entry[@"year"] isKindOfClass:[NSString class]]) track.releaseDate = entry[@"year"];
+    if ([entry[@"track"] isKindOfClass:[NSNumber class]]) track.trackPosition = [entry[@"track"] integerValue];
+    if ([entry[@"disc"] isKindOfClass:[NSNumber class]]) track.diskNumber = [entry[@"disc"] integerValue];
+    if ([entry[@"duration"] isKindOfClass:[NSNumber class]]) track.duration = [entry[@"duration"] doubleValue];
+    download.track = track;
+    return download;
+}
+
+// Rebuild the track from what the file says about itself. Used when the
+// manifest is gone and the audio is the only source left.
+- (void)applyTags:(NSDictionary *)tags {
+    if (![tags isKindOfClass:[NSDictionary class]] || !tags.count) return;
+    waTrack *track = self.track ?: [[waTrack alloc] init];
+    NSString *identifier = tags[@"trackID"];
+    if (identifier.length) {
+        track.identifier = identifier;
+        if (!self.trackID.length) self.trackID = identifier;
+    }
+    if ([tags[@"title"] isKindOfClass:[NSString class]]) track.title = tags[@"title"];
+    if ([tags[@"artist"] isKindOfClass:[NSString class]]) track.artistName = tags[@"artist"];
+    if ([tags[@"album"] isKindOfClass:[NSString class]]) track.albumTitle = tags[@"album"];
+    if ([tags[@"albumID"] isKindOfClass:[NSString class]]) track.albumIdentifier = tags[@"albumID"];
+    if ([tags[@"year"] isKindOfClass:[NSString class]]) track.releaseDate = tags[@"year"];
+    NSString *trackNumber = tags[@"track"];
+    if ([trackNumber isKindOfClass:[NSString class]]) {
+        NSArray *parts = [trackNumber componentsSeparatedByString:@"/"];
+        if (parts.count) track.trackPosition = [[parts objectAtIndex:0] integerValue];
+    }
+    NSString *discNumber = tags[@"disc"];
+    if ([discNumber isKindOfClass:[NSString class]]) {
+        NSArray *parts = [discNumber componentsSeparatedByString:@"/"];
+        if (parts.count) track.diskNumber = [[parts objectAtIndex:0] integerValue];
+    }
+    self.track = track;
+}
+
+- (NSDictionary *)tagFields {
+    NSMutableDictionary *fields = [NSMutableDictionary dictionary];
+    waTrack *track = self.track;
+    if (track.title.length) fields[@"title"] = track.title;
+    if (track.artistName.length) fields[@"artist"] = track.artistName;
+    if (track.albumTitle.length) fields[@"album"] = track.albumTitle;
+    if (track.trackPosition > 0) fields[@"track"] = [NSString stringWithFormat:@"%ld", (long)track.trackPosition];
+    if (track.diskNumber > 0) fields[@"disc"] = [NSString stringWithFormat:@"%ld", (long)track.diskNumber];
+    if (track.releaseDate.length >= 4) fields[@"year"] = [track.releaseDate substringToIndex:4];
+    if (self.trackID.length) fields[@"trackID"] = self.trackID;
+    if (track.albumIdentifier.length) fields[@"albumID"] = track.albumIdentifier;
+    if (track.artistIdentifier.length) fields[@"artistID"] = track.artistIdentifier;
+    return fields;
 }
 
 @end
@@ -124,9 +224,22 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
 - (void)finishTask:(waDownloadTask *)task;
 - (void)migrateLegacyDirectories;
 - (NSString *)pathForDownload:(waDownload *)download;
-- (void)writeSidecar:(waDownload *)download;
-- (NSString *)metaPathForTrackID:(NSString *)trackID;
 - (void)downloadDidComplete:(waDownload *)download;
+- (NSString *)tagAndRename:(waDownload *)download;
+- (void)tagDownload:(waDownload *)download;
+- (NSString *)readableFileNameForTrack:(waTrack *)track extension:(NSString *)extension currentPath:(NSString *)currentPath;
+- (NSString *)sanitizedComponent:(NSString *)text;
+- (NSData *)coverDataForDownload:(waDownload *)download;
+- (void)migrateToTaggedStorage;
+- (void)migrateLyricsForDownload:(waDownload *)download;
+- (void)syncLyricsSidecarsForDownload:(waDownload *)download;
+- (NSString *)lyricsPathForDownload:(waDownload *)download;
+- (NSString *)lyricsPathForFileName:(NSString *)fileName;
+- (NSString *)lrcPathForFileName:(NSString *)fileName;
+- (void)fetchArtworkForDownload:(waDownload *)download completion:(void (^)(void))completion;
+- (NSString *)hiresArtworkURLForTrack:(waTrack *)track;
+- (BOOL)needsStorageMigration;
+- (void)pruneLegacySidecarForTrackID:(NSString *)trackID;
 - (NSString *)mediaDirectory;
 - (void)runIO:(void (^)(void))block;
 - (NSArray *)orderAlbumIDs:(NSArray *)ids;
@@ -358,6 +471,9 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
         NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
         _directory = [[docs objectAtIndex:0] stringByAppendingPathComponent:@"WaveDownloads"];
         [[NSFileManager defaultManager] createDirectoryAtPath:_directory withIntermediateDirectories:YES attributes:nil error:NULL];
+        // Music is user data, not something a restore should pull back down.
+        NSURL *rootURL = [NSURL fileURLWithPath:_directory];
+        [rootURL setResourceValue:[NSNumber numberWithBool:YES] forKey:NSURLIsExcludedFromBackupKey error:NULL];
         [self ensureLayout];
         [self migrateLegacyDirectories];
         [self migrateFlatIntoLayout];
@@ -373,6 +489,7 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
     [self refreshActivity];
     [self startQueued];
     [self backfillLyricsIfIdle];
+    [self migrateToTaggedStorage];
 }
 
 - (NSString *)directory { return _directory; }
@@ -394,18 +511,49 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
 
 - (NSArray *)downloads { return [self.items copy]; }
 
-- (NSString *)plistPath {
+// The manifest is plain JSON so a copy of the folder explains itself on any
+// machine, and so it can be rebuilt from the file tags when it goes missing.
+- (NSString *)manifestPath {
+    return [_directory stringByAppendingPathComponent:@"library.json"];
+}
+
+- (NSString *)legacyIndexPath {
     return [_directory stringByAppendingPathComponent:@"index.plist"];
 }
 
-- (NSString *)metaPathForTrackID:(NSString *)trackID {
-    if (!trackID.length) return nil;
-    return [[self metaDirectory] stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.plist", trackID]];
+// Lyrics sit next to the audio under the same base name: .lrc for other
+// players, the word-timed plist for the karaoke stage.
+- (NSString *)lyricsPathForFileName:(NSString *)fileName {
+    NSString *base = [fileName stringByDeletingPathExtension];
+    if (!base.length) return nil;
+    return [[self mediaDirectory] stringByAppendingPathComponent:[base stringByAppendingPathExtension:@"lyrics.plist"]];
+}
+
+- (NSString *)lrcPathForFileName:(NSString *)fileName {
+    NSString *base = [fileName stringByDeletingPathExtension];
+    if (!base.length) return nil;
+    return [[self mediaDirectory] stringByAppendingPathComponent:[base stringByAppendingPathExtension:@"lrc"]];
+}
+
+- (NSString *)lyricsPathForDownload:(waDownload *)download {
+    NSString *name = download.fileName;
+    if (!name.length) name = [download.trackID stringByAppendingPathExtension:(download.format ?: @"mp3")];
+    return [self lyricsPathForFileName:name];
 }
 
 - (NSString *)lyricsPathForTrackID:(NSString *)trackID {
     if (!trackID.length) return nil;
-    return [[self lyricsDirectory] stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.plist", trackID]];
+    waDownload *download = [self itemForTrackID:trackID];
+    if (download) return [self lyricsPathForDownload:download];
+    return [self lyricsPathForFileName:[trackID stringByAppendingPathExtension:@"mp3"]];
+}
+
+- (NSString *)lrcPathForTrackID:(NSString *)trackID {
+    if (!trackID.length) return nil;
+    waDownload *download = [self itemForTrackID:trackID];
+    NSString *name = download.fileName;
+    if (!name.length) name = [trackID stringByAppendingPathExtension:@"mp3"];
+    return [self lrcPathForFileName:name];
 }
 
 - (NSString *)artPathForAlbumID:(NSString *)albumID {
@@ -474,20 +622,11 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
         } else if ([lower hasSuffix:@".meta.plist"]) {
             NSString *trackID = [[name stringByDeletingPathExtension] stringByDeletingPathExtension];
             if (!trackID.length) continue;
-            NSString *to = [self metaPathForTrackID:trackID];
+            NSString *to = [[self metaDirectory] stringByAppendingPathComponent:[trackID stringByAppendingPathExtension:@"plist"]];
             if (![manager fileExistsAtPath:to]) [manager moveItemAtPath:from toPath:to error:NULL];
             else [manager removeItemAtPath:from error:NULL];
         }
     }
-}
-
-- (void)writeSidecar:(waDownload *)download {
-    NSDictionary *plist = [download plist];
-    NSString *path = [self metaPathForTrackID:download.trackID];
-    if (!path || !plist) return;
-    [self.storeQueue addOperationWithBlock:^{
-        [plist writeToFile:path atomically:YES];
-    }];
 }
 
 - (NSString *)collectionPath:(waDownloadCollection *)collection {
@@ -518,54 +657,79 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
 }
 
 - (void)load {
+    NSFileManager *manager = [NSFileManager defaultManager];
     NSMutableDictionary *byID = [NSMutableDictionary dictionary];
-    NSArray *stored = [NSArray arrayWithContentsOfFile:[self plistPath]];
-    for (NSDictionary *dict in stored) {
-        waDownload *download = [waDownload downloadFromPlist:dict];
-        if (!download.trackID.length) continue;
-        [self pathForDownload:download];
+
+    NSDictionary *manifest = nil;
+    NSData *data = [NSData dataWithContentsOfFile:[self manifestPath]];
+    if (data.length) {
+        id json = nil;
+        @try { json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL]; }
+        @catch (NSException *exception) { [[waLog shared] log:@"manifest parse %@", exception.reason]; }
+        if ([json isKindOfClass:[NSDictionary class]]) manifest = json;
+    }
+    NSArray *entries = [manifest[@"tracks"] isKindOfClass:[NSArray class]] ? manifest[@"tracks"] : nil;
+    for (NSDictionary *entry in entries) {
+        waDownload *download = [waDownload downloadFromManifestEntry:entry];
+        if (!download) continue;
         byID[download.trackID] = download;
     }
 
-    NSFileManager *manager = [NSFileManager defaultManager];
-    NSArray *metaNames = [manager contentsOfDirectoryAtPath:[self metaDirectory] error:NULL];
-    for (NSString *name in metaNames) {
-        if (![name isKindOfClass:[NSString class]] || ![[name lowercaseString] hasSuffix:@".plist"]) continue;
-        NSString *trackID = [name stringByDeletingPathExtension];
-        if (!trackID.length || byID[trackID]) continue;
-        NSDictionary *sidecar = [NSDictionary dictionaryWithContentsOfFile:[[self metaDirectory] stringByAppendingPathComponent:name]];
-        waDownload *download = [waDownload downloadFromPlist:sidecar];
-        if (!download) continue;
-        if (!download.trackID.length) download.trackID = trackID;
-        byID[trackID] = download;
+    // Storage from before tags: index.plist plus one sidecar per track.
+    if (!entries.count) {
+        NSArray *stored = [NSArray arrayWithContentsOfFile:[self legacyIndexPath]];
+        for (NSDictionary *dict in stored) {
+            waDownload *download = [waDownload downloadFromPlist:dict];
+            if (!download.trackID.length) continue;
+            byID[download.trackID] = download;
+        }
+        NSArray *metaNames = [manager contentsOfDirectoryAtPath:[self metaDirectory] error:NULL];
+        for (NSString *name in metaNames) {
+            if (![name isKindOfClass:[NSString class]] || ![[name lowercaseString] hasSuffix:@".plist"]) continue;
+            NSString *trackID = [name stringByDeletingPathExtension];
+            if (!trackID.length || byID[trackID]) continue;
+            NSDictionary *sidecar = [NSDictionary dictionaryWithContentsOfFile:
+                                     [[self metaDirectory] stringByAppendingPathComponent:name]];
+            waDownload *download = [waDownload downloadFromPlist:sidecar];
+            if (!download) continue;
+            if (!download.trackID.length) download.trackID = trackID;
+            byID[trackID] = download;
+        }
     }
 
-    NSMutableArray *audioDirs = [NSMutableArray arrayWithObject:[self mediaDirectory]];
-    [audioDirs addObject:_directory];
-    for (NSString *dir in audioDirs) {
-        NSArray *names = [manager contentsOfDirectoryAtPath:dir error:NULL];
-        for (NSString *name in names) {
-            if (![name isKindOfClass:[NSString class]]) continue;
-            NSString *lower = [name lowercaseString];
-            if (![lower hasSuffix:@".mp3"] && ![lower hasSuffix:@".flac"]) continue;
-            NSString *trackID = [name stringByDeletingPathExtension];
-            if (!trackID.length) continue;
-            waDownload *download = byID[trackID];
-            if (!download) {
-                download = [[waDownload alloc] init];
-                download.trackID = trackID;
-                waTrack *track = [[waTrack alloc] init];
-                track.identifier = trackID;
-                track.title = trackID;
-                download.track = track;
-                byID[trackID] = download;
-            }
-            download.fileName = name;
-            download.filePath = [dir stringByAppendingPathComponent:name];
-            download.format = [lower hasSuffix:@".flac"] ? @"flac" : @"mp3";
-            download.state = waDownloadCompleted;
-            download.progress = 1.0f;
+    // Every path the manifest claims, so the scan below only touches files the
+    // manifest does not know: a rename or a drop from outside.
+    NSMutableSet *knownPaths = [NSMutableSet set];
+    for (waDownload *download in [byID allValues]) {
+        NSString *path = [self pathForDownload:download];
+        if (path.length) [knownPaths addObject:path];
+    }
+
+    NSArray *names = [manager contentsOfDirectoryAtPath:[self mediaDirectory] error:NULL];
+    for (NSString *name in names) {
+        if (![name isKindOfClass:[NSString class]]) continue;
+        NSString *lower = [name lowercaseString];
+        if (![lower hasSuffix:@".mp3"] && ![lower hasSuffix:@".flac"]) continue;
+        NSString *path = [[self mediaDirectory] stringByAppendingPathComponent:name];
+        if ([knownPaths containsObject:path]) continue;
+        NSString *format = [lower hasSuffix:@".flac"] ? @"flac" : @"mp3";
+        NSDictionary *tags = [waTags tagsAtPath:path format:format];
+        NSString *trackID = [tags[@"trackID"] isKindOfClass:[NSString class]] ? tags[@"trackID"] : nil;
+        if (!trackID.length) trackID = [name stringByDeletingPathExtension];
+        if (!trackID.length) continue;
+        waDownload *download = byID[trackID];
+        if (!download) {
+            download = [[waDownload alloc] init];
+            download.trackID = trackID;
+            download.addedAt = [[NSDate date] timeIntervalSince1970];
+            byID[trackID] = download;
         }
+        download.fileName = name;
+        download.filePath = path;
+        download.format = format;
+        download.state = waDownloadCompleted;
+        download.progress = 1.0f;
+        if (!download.track.title.length) [download applyTags:tags];
     }
 
     [self.items removeAllObjects];
@@ -576,13 +740,66 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
         if (download.state == waDownloadCompleted && !exists) download.state = waDownloadFailed;
         if (download.state == waDownloadDownloading || download.state == waDownloadResolving) download.state = waDownloadQueued;
         if (download.state == waDownloadCancelled && !exists) continue;
-        NSString *lyricsPath = [self lyricsPathForTrackID:download.trackID];
+        if (exists) {
+            NSDictionary *attributes = [manager attributesOfItemAtPath:path error:NULL];
+            unsigned long long size = [attributes fileSize];
+            if (size > 0) {
+                if (download.bytesExpected > 0 && download.bytesExpected != size) {
+                    [[waLog shared] log:@"download size drift %@ %llu != %llu", download.trackID, download.bytesExpected, size];
+                }
+                download.bytesExpected = size;
+            }
+        }
+        [self migrateLyricsForDownload:download];
+        NSString *lyricsPath = [self lyricsPathForDownload:download];
         download.hasLyrics = lyricsPath.length && [manager fileExistsAtPath:lyricsPath];
+        if (!download.hasLyrics && download.format.length) {
+            NSDictionary *tags = [waTags tagsAtPath:path format:download.format];
+            if (!download.track.title.length && tags) [download applyTags:tags];
+        }
         [self.items addObject:download];
         if (download.trackID.length) self.itemByID[download.trackID] = download;
     }
     [self loadCollections];
     [self persist];
+}
+
+// Older builds kept lyrics in their own folder keyed by track id. Move them
+// next to the audio once, so the folder stays self-describing.
+- (void)migrateLyricsForDownload:(waDownload *)download {
+    if (!download.fileName.length) return;
+    NSString *target = [self lyricsPathForDownload:download];
+    if (!target.length) return;
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSArray *sources = [NSArray arrayWithObjects:
+                        [[self lyricsDirectory] stringByAppendingPathComponent:
+                         [download.trackID stringByAppendingPathExtension:@"plist"]],
+                        [[self mediaDirectory] stringByAppendingPathComponent:
+                         [download.trackID stringByAppendingPathExtension:@"lyrics.plist"]],
+                        nil];
+    for (NSString *source in sources) {
+        if ([source isEqualToString:target] || ![manager fileExistsAtPath:source]) continue;
+        if ([manager fileExistsAtPath:target]) {
+            [manager removeItemAtPath:source error:NULL];
+            continue;
+        }
+        [manager moveItemAtPath:source toPath:target error:NULL];
+    }
+}
+
+// After the audio is renamed the lyrics have to follow it, and the portable
+// .lrc is written from the word-timed copy the first time.
+- (void)syncLyricsSidecarsForDownload:(waDownload *)download {
+    [self migrateLyricsForDownload:download];
+    NSString *plist = [self lyricsPathForTrackID:download.trackID];
+    NSString *lrc = [self lrcPathForTrackID:download.trackID];
+    if (!plist.length || !lrc.length) return;
+    NSFileManager *manager = [NSFileManager defaultManager];
+    BOOL hasPlist = [manager fileExistsAtPath:plist];
+    download.hasLyrics = hasPlist;
+    if (!hasPlist || [manager fileExistsAtPath:lrc]) return;
+    NSString *text = [self lrcTextForLyrics:[self localLyricsForTrackID:download.trackID]];
+    if (text.length) [text writeToFile:lrc atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
 - (void)runIO:(void (^)(void))block {
@@ -596,12 +813,20 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
 - (void)persist {
     NSMutableArray *list = [NSMutableArray arrayWithCapacity:self.items.count];
     for (waDownload *download in self.items) {
-        NSDictionary *plist = [download plist];
-        if (plist) [list addObject:plist];
+        NSDictionary *entry = [download manifestEntry];
+        if (entry) [list addObject:entry];
     }
-    NSString *path = [self plistPath];
+    NSDictionary *manifest = [NSDictionary dictionaryWithObjectsAndKeys:
+                              [NSNumber numberWithInt:1], @"version",
+                              [NSNumber numberWithLongLong:(long long)[[NSDate date] timeIntervalSince1970]], @"generated",
+                              list, @"tracks",
+                              nil];
+    NSString *path = [self manifestPath];
     [self.storeQueue addOperationWithBlock:^{
-        [list writeToFile:path atomically:YES];
+        NSData *data = nil;
+        @try { data = [NSJSONSerialization dataWithJSONObject:manifest options:NSJSONWritingPrettyPrinted error:NULL]; }
+        @catch (NSException *exception) { [[waLog shared] log:@"manifest write %@", exception.reason]; }
+        if (data.length) [data writeToFile:path atomically:YES];
     }];
 }
 
@@ -682,7 +907,6 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
         download.progress = 0.0f;
         download.errorMessage = nil;
         download.addedAt = now;
-        [self writeSidecar:download];
         if (!collection) [self attachTrack:track toAlbumCollection:NO];
     }
     [self persist];
@@ -794,7 +1018,6 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
     }
     waDownload *download = task.download;
     [self.tasks removeObject:task];
-    [self writeSidecar:download];
     [self persist];
     self.cachedBytesValid = NO;
     if (download.state == waDownloadCompleted) [self downloadDidComplete:download];
@@ -805,21 +1028,54 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
 
 - (void)downloadDidComplete:(waDownload *)download {
     [self attachTrack:download.track toAlbumCollection:NO];
-    [self fetchArtworkForDownload:download];
+    __weak waDownloader *weakSelf = self;
+    [self fetchArtworkForDownload:download completion:^{
+        waDownloader *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf tagDownload:download];
+    }];
     [self fetchLyricsForDownload:download];
 }
 
-- (void)fetchArtworkForDownload:(waDownload *)download {
+// Largest square the CDN serves. The manifest and the tag both want it, so it
+// is fetched once per album before the track is tagged.
+- (NSString *)hiresArtworkURLForTrack:(waTrack *)track {
+    NSString *url = [track bestArtworkURL];
+    if (!url.length) return nil;
+    NSRange slash = [url rangeOfString:@"/" options:NSBackwardsSearch];
+    if (slash.location == NSNotFound) return url;
+    NSString *file = [url substringFromIndex:slash.location + 1];
+    NSRange cross = [file rangeOfString:@"x"];
+    if (cross.location == NSNotFound || cross.location == 0) return url;
+    NSString *rest = [file substringFromIndex:cross.location + 1];
+    NSString *replacement = [NSString stringWithFormat:@"1920x1920%@", rest];
+    NSString *base = [url substringToIndex:slash.location + 1];
+    return [base stringByAppendingString:replacement];
+}
+
+static NSInteger waArtworkPixelWidth(NSString *path) {
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], NULL);
+    if (!source) return 0;
+    NSDictionary *properties = (__bridge_transfer NSDictionary *)CGImageSourceCopyPropertiesAtIndex(source, 0, NULL);
+    CFRelease(source);
+    return [[properties objectForKey:(id)kCGImagePropertyPixelWidth] integerValue];
+}
+
+- (void)fetchArtworkForDownload:(waDownload *)download completion:(void (^)(void))completion {
     waTrack *track = download.track;
     NSString *albumID = track.albumIdentifier;
     NSString *dest = albumID.length ? [self artPathForAlbumID:albumID] : [self artPathForTrackID:download.trackID];
-    if (!dest.length) return;
-    if ([[NSFileManager defaultManager] fileExistsAtPath:dest]) return;
-    NSString *url = [track bestArtworkURL];
-    if (!url.length) return;
+    if (!dest.length) { if (completion) completion(); return; }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:dest] && waArtworkPixelWidth(dest) >= 1200) {
+        if (completion) completion();
+        return;
+    }
+    NSString *url = [self hiresArtworkURLForTrack:track];
+    if (!url.length) { if (completion) completion(); return; }
     NSString *cached = [[waImageCache shared] sourcePathForURL:url];
     if (cached.length) {
         [[NSFileManager defaultManager] copyItemAtPath:cached toPath:dest error:NULL];
+        if (completion) completion();
         return;
     }
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]
@@ -828,9 +1084,142 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
     [request setValue:@"Wave/1.0" forHTTPHeaderField:@"User-Agent"];
     [NSURLConnection sendAsynchronousRequest:request queue:self.storeQueue completionHandler:^(NSURLResponse *response, NSData *data, NSError *error) {
         (void)response;
-        if (error || data.length < 64) return;
-        [data writeToFile:dest atomically:YES];
+        if (!error && data.length >= 64) [data writeToFile:dest atomically:YES];
+        if (completion) completion();
     }];
+}
+
+#pragma mark - tags
+
+- (NSData *)coverDataForDownload:(waDownload *)download {
+    waTrack *track = download.track;
+    NSString *path = track.albumIdentifier.length ? [self artPathForAlbumID:track.albumIdentifier]
+                                                  : [self artPathForTrackID:download.trackID];
+    if (!path.length || ![[NSFileManager defaultManager] fileExistsAtPath:path]) return nil;
+    return [NSData dataWithContentsOfFile:path];
+}
+
+- (NSString *)sanitizedComponent:(NSString *)text {
+    if (!text.length) return nil;
+    NSString *value = [text stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+    value = [value stringByReplacingOccurrencesOfString:@":" withString:@"-"];
+    value = [value stringByReplacingOccurrencesOfString:@"\\" withString:@"-"];
+    value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSMutableString *clean = [NSMutableString stringWithCapacity:value.length];
+    for (NSUInteger index = 0; index < value.length; index++) {
+        unichar character = [value characterAtIndex:index];
+        if (character < 0x20) continue;
+        [clean appendFormat:@"%C", character];
+    }
+    return clean.length ? clean : nil;
+}
+
+- (NSString *)readableFileNameForTrack:(waTrack *)track extension:(NSString *)extension currentPath:(NSString *)currentPath {
+    NSString *format = extension.length ? extension : @"mp3";
+    NSString *artist = [self sanitizedComponent:track.artistName];
+    NSString *title = [self sanitizedComponent:track.title];
+    NSString *base = nil;
+    if (artist.length && title.length) base = [NSString stringWithFormat:@"%@ - %@", artist, title];
+    else if (title.length) base = title;
+    else if (artist.length) base = artist;
+    if (!base.length) base = [[currentPath lastPathComponent] stringByDeletingPathExtension];
+    if (!base.length) base = @"track";
+    if (base.length > 90) base = [base substringToIndex:90];
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSString *name = [base stringByAppendingPathExtension:format];
+    NSString *target = [[self mediaDirectory] stringByAppendingPathComponent:name];
+    if ([target isEqualToString:currentPath] || ![manager fileExistsAtPath:target]) return name;
+    for (NSUInteger suffix = 2; suffix < 500; suffix++) {
+        NSString *candidate = [NSString stringWithFormat:@"%@ (%lu).%@", base, (unsigned long)suffix, format];
+        NSString *candidatePath = [[self mediaDirectory] stringByAppendingPathComponent:candidate];
+        if ([candidatePath isEqualToString:currentPath]) return candidate;
+        if (![manager fileExistsAtPath:candidatePath]) return candidate;
+    }
+    return name;
+}
+
+// Runs on the store queue. Returns the final file name, or nil when the file
+// could not be tagged; the audio is never left half written.
+- (NSString *)tagAndRename:(waDownload *)download {
+    if (download.state != waDownloadCompleted) return nil;
+    if (![download.format isEqualToString:@"mp3"]) return download.fileName; // FLAC blocks land later
+    NSString *path = download.filePath.length ? download.filePath : [self pathForDownload:download];
+    if (!path.length || ![[NSFileManager defaultManager] fileExistsAtPath:path]) return nil;
+    NSString *wanted = [self readableFileNameForTrack:download.track extension:download.format currentPath:path];
+    NSDictionary *existing = [waTags tagsAtPath:path format:@"mp3"];
+    BOOL tagged = [[existing objectForKey:@"trackID"] isEqualToString:download.trackID];
+    BOOL named = [[path lastPathComponent] isEqualToString:wanted];
+    if (tagged && named) return download.fileName;
+
+    NSError *error = nil;
+    if (![waTags writeID3v23ToPath:path fields:[download tagFields] cover:[self coverDataForDownload:download] error:&error]) {
+        [[waLog shared] log:@"tag failed %@ %@", download.trackID, error.localizedDescription];
+        return nil;
+    }
+    NSString *target = [[self mediaDirectory] stringByAppendingPathComponent:wanted];
+    if (![target isEqualToString:path]) {
+        [[NSFileManager defaultManager] removeItemAtPath:target error:NULL];
+        if (![[NSFileManager defaultManager] moveItemAtPath:path toPath:target error:&error]) {
+            [[waLog shared] log:@"rename failed %@ %@", download.trackID, error.localizedDescription];
+            return [path lastPathComponent];
+        }
+    }
+    [[waLog shared] log:@"tagged %@ as %@", download.trackID, wanted];
+    return wanted;
+}
+
+- (void)tagDownload:(waDownload *)download {
+    __weak waDownloader *weakSelf = self;
+    [self.storeQueue addOperationWithBlock:^{
+        waDownloader *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *name = [strongSelf tagAndRename:download];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            waDownloader *mainSelf = weakSelf;
+            if (!mainSelf) return;
+            if (name.length) {
+                download.fileName = name;
+                download.filePath = [[mainSelf mediaDirectory] stringByAppendingPathComponent:name];
+                NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:download.filePath error:NULL];
+                if ([attributes fileSize] > 0) download.bytesExpected = [attributes fileSize];
+                [mainSelf syncLyricsSidecarsForDownload:download];
+                [mainSelf pruneLegacySidecarForTrackID:download.trackID];
+            }
+            [mainSelf persist];
+            [mainSelf postChange];
+        });
+    }];
+}
+
+- (BOOL)needsStorageMigration {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    if ([manager fileExistsAtPath:[self legacyIndexPath]]) return YES;
+    NSArray *meta = [manager contentsOfDirectoryAtPath:[self metaDirectory] error:NULL];
+    return meta.count > 0;
+}
+
+// One pass over what is already downloaded. Each track drops its old sidecar
+// only after its own tag is written, so an interrupted pass loses nothing.
+- (void)migrateToTaggedStorage {
+    if (![self needsStorageMigration]) return;
+    NSArray *items = [self.items copy];
+    [[waLog shared] log:@"downloads migrate %lu", (unsigned long)items.count];
+    for (waDownload *download in items) {
+        if (download.state != waDownloadCompleted) continue;
+        [self tagDownload:download];
+    }
+}
+
+- (void)pruneLegacySidecarForTrackID:(NSString *)trackID {
+    if (!trackID.length) return;
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSString *sidecar = [[self metaDirectory] stringByAppendingPathComponent:[trackID stringByAppendingPathExtension:@"plist"]];
+    if ([manager fileExistsAtPath:sidecar]) [manager removeItemAtPath:sidecar error:NULL];
+    NSArray *left = [manager contentsOfDirectoryAtPath:[self metaDirectory] error:NULL];
+    if (!left.count) {
+        [manager removeItemAtPath:[self metaDirectory] error:NULL];
+        [manager removeItemAtPath:[self legacyIndexPath] error:NULL];
+    }
 }
 
 - (void)fetchLyricsForDownload:(waDownload *)download {
@@ -877,16 +1266,34 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
     }];
 }
 
+// The plist keeps the word timings the karaoke stage needs; the .lrc next to
+// it is what another player can read.
+- (NSString *)lrcTextForLyrics:(waLyrics *)lyrics {
+    if (!lyrics) return nil;
+    NSMutableString *text = [NSMutableString string];
+    for (waLyricLine *line in lyrics.lines) {
+        if (![line isKindOfClass:[waLyricLine class]] || !line.text.length) continue;
+        double start = line.start > 0.0 ? line.start : 0.0;
+        NSInteger minutes = (NSInteger)(start / 60.0);
+        double seconds = start - minutes * 60.0;
+        [text appendFormat:@"[%02ld:%05.2f]%@\n", (long)minutes, seconds, line.text];
+    }
+    if (!text.length && lyrics.plain.length) [text appendString:lyrics.plain];
+    return text.length ? text : nil;
+}
+
 - (void)storeLyrics:(waLyrics *)lyrics forTrackID:(NSString *)trackID {
     if (!lyrics || !trackID.length) return;
     if (![self isDownloadedTrackID:trackID] && ![self itemForTrackID:trackID]) return;
     NSString *path = [self lyricsPathForTrackID:trackID];
     if (!path.length) return;
     [[lyrics plist] writeToFile:path atomically:YES];
+    NSString *lrcPath = [self lrcPathForTrackID:trackID];
+    NSString *lrc = [self lrcTextForLyrics:lyrics];
+    if (lrcPath.length && lrc.length) [lrc writeToFile:lrcPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
     waDownload *download = [self itemForTrackID:trackID];
     if (download) {
         download.hasLyrics = YES;
-        [self writeSidecar:download];
         [self persist];
     }
 }
@@ -945,13 +1352,13 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
 - (void)removeDownload:(waDownload *)download notify:(BOOL)notify {
     [self cancelDownload:download notify:NO];
     NSString *path = [self pathForDownload:download];
-    NSString *meta = [self metaPathForTrackID:download.trackID];
     NSString *lyrics = [self lyricsPathForTrackID:download.trackID];
+    NSString *lrc = [self lrcPathForTrackID:download.trackID];
     [self.storeQueue addOperationWithBlock:^{
         NSFileManager *manager = [NSFileManager defaultManager];
         if (path.length) [manager removeItemAtPath:path error:NULL];
-        if (meta.length) [manager removeItemAtPath:meta error:NULL];
         if (lyrics.length) [manager removeItemAtPath:lyrics error:NULL];
+        if (lrc.length) [manager removeItemAtPath:lrc error:NULL];
     }];
     NSString *albumID = download.track.albumIdentifier;
     if (download.trackID.length) [self.itemByID removeObjectForKey:download.trackID];
