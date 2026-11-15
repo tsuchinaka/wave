@@ -34,16 +34,20 @@ static void waRingFree(waRing *ring) {
     ring->capacity = 0;
 }
 
+// Interleaved stereo, so a run of frames is one contiguous block. At most two
+// spans when the run wraps, never a frame-by-frame copy with a modulo each.
 static size_t waRingWrite(waRing *ring, const float *source, size_t frames) {
     pthread_mutex_lock(&ring->lock);
     size_t freeFrames = ring->capacity - ring->count;
     size_t toWrite = MIN(frames, freeFrames);
-    for (size_t i = 0; i < toWrite; i++) {
-        ring->data[ring->write * 2] = source[i * 2];
-        ring->data[ring->write * 2 + 1] = source[i * 2 + 1];
-        ring->write = (ring->write + 1) % ring->capacity;
+    if (toWrite) {
+        size_t first = MIN(toWrite, ring->capacity - ring->write);
+        memcpy(&ring->data[ring->write * 2], source, first * 2 * sizeof(float));
+        size_t rest = toWrite - first;
+        if (rest) memcpy(&ring->data[0], source + first * 2, rest * 2 * sizeof(float));
+        ring->write = (ring->write + toWrite) % ring->capacity;
+        ring->count += toWrite;
     }
-    ring->count += toWrite;
     pthread_mutex_unlock(&ring->lock);
     return toWrite;
 }
@@ -51,12 +55,14 @@ static size_t waRingWrite(waRing *ring, const float *source, size_t frames) {
 static size_t waRingRead(waRing *ring, float *dest, size_t frames) {
     pthread_mutex_lock(&ring->lock);
     size_t toRead = MIN(frames, ring->count);
-    for (size_t i = 0; i < toRead; i++) {
-        dest[i * 2] = ring->data[ring->read * 2];
-        dest[i * 2 + 1] = ring->data[ring->read * 2 + 1];
-        ring->read = (ring->read + 1) % ring->capacity;
+    if (toRead) {
+        size_t first = MIN(toRead, ring->capacity - ring->read);
+        memcpy(dest, &ring->data[ring->read * 2], first * 2 * sizeof(float));
+        size_t rest = toRead - first;
+        if (rest) memcpy(dest + first * 2, &ring->data[0], rest * 2 * sizeof(float));
+        ring->read = (ring->read + toRead) % ring->capacity;
+        ring->count -= toRead;
     }
-    ring->count -= toRead;
     pthread_mutex_unlock(&ring->lock);
     return toRead;
 }
@@ -133,6 +139,10 @@ typedef struct {
     NSTimeInterval _outputStampRendered;
     pthread_mutex_t _stateLock;
     pthread_mutex_t _renderLock;
+    void *_pumpScratch;
+    float *_pumpFloats;
+    void *_nextPumpScratch;
+    float *_nextPumpFloats;
 }
 - (void)renderInto:(AudioQueueBufferRef)buffer;
 - (void)maybeFinish;
@@ -142,6 +152,7 @@ typedef struct {
 - (BOOL)setupWithURL:(NSURL *)url error:(NSError **)error;
 - (void)promoteNext;
 - (void)promoteNextNotify:(BOOL)notify;
+- (void)ensureScratch;
 @end
 
 static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBufferRef buffer);
@@ -164,6 +175,7 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
         pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
         pthread_mutex_init(&_renderLock, &attr);
         pthread_mutexattr_destroy(&attr);
+        [self ensureScratch];
         [self rebuildEQ];
     }
     return self;
@@ -173,11 +185,27 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     [self stop];
     waRingFree(&_ring);
     waRingFree(&_nextRing);
+    free(_pumpScratch);
+    free(_pumpFloats);
+    free(_nextPumpScratch);
+    free(_nextPumpFloats);
 #if !OS_OBJECT_USE_OBJC
     if (_nextDecodeQueue) dispatch_release(_nextDecodeQueue);
 #endif
     pthread_mutex_destroy(&_stateLock);
     pthread_mutex_destroy(&_renderLock);
+}
+
+// One allocation per core, not two per 1024-frame block. 1024 frames of
+// 16 bytes covers every container the decoder can hand back.
+#define WA_PUMP_BYTES (1024 * 16)
+#define WA_PUMP_FLOATS (1024 * 2 * sizeof(float))
+
+- (void)ensureScratch {
+    if (!_pumpScratch) _pumpScratch = calloc(1, WA_PUMP_BYTES);
+    if (!_pumpFloats) _pumpFloats = (float *)calloc(1, WA_PUMP_FLOATS);
+    if (!_nextPumpScratch) _nextPumpScratch = calloc(1, WA_PUMP_BYTES);
+    if (!_nextPumpFloats) _nextPumpFloats = (float *)calloc(1, WA_PUMP_FLOATS);
 }
 
 #pragma mark - public
@@ -429,7 +457,8 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     if (_overlapTotal < 512) _overlapTotal = 512;
     _overlapDone = 0;
     _overlapping = YES;
-    [[waLog shared] log:@"crossfade %.2fs", duration];
+    // Called from the audio callback: no formatting, no allocation here.
+    dispatch_async(_decodeQueue, ^{ [[waLog shared] log:@"crossfade %.2fs", duration]; });
 }
 
 - (void)pumpNext:(NSUInteger)generation {
@@ -438,12 +467,14 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     AudioStreamBasicDescription nf = [_nextInput format];
     size_t bytesPerFrame = nf.mBytesPerFrame;
     if (bytesPerFrame == 0) bytesPerFrame = 4;
+    if (bytesPerFrame > 16) bytesPerFrame = 16;
+    [self ensureScratch];
     if (waRingCount(&_nextRing) > _nextRing.capacity - chunkFrames) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), _nextDecodeQueue, ^{ [self pumpNext:generation]; });
         return;
     }
-    void *scratch = malloc(chunkFrames * bytesPerFrame);
-    float *floats = (float *)malloc(chunkFrames * 2 * sizeof(float));
+    void *scratch = _nextPumpScratch;
+    float *floats = _nextPumpFloats;
     int moved = [_nextInput shiftBytes:chunkFrames * bytesPerFrame buffer:scratch];
     if (moved <= 0) {
         if (_nextInput.endOfInput) _nextFinished = YES;
@@ -462,8 +493,6 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
             written += wrote;
         }
     }
-    free(scratch);
-    free(floats);
     if (_nextFinished && waRingCount(&_nextRing) == 0) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.002 * NSEC_PER_SEC)), _nextDecodeQueue, ^{ [self pumpNext:generation]; });
 }
@@ -513,6 +542,7 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     NSTimeInterval duration = _duration;
     __weak waAudioCore *weakSelf = self;
     dispatch_async(_decodeQueue, ^{
+        [[waLog shared] log:@"promoted next"];
         [old close];
         waAudioCore *core = weakSelf;
         if (core) [core startDecoding];
@@ -525,7 +555,6 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
             }
         });
     }
-    [[waLog shared] log:@"promoted next"];
 }
 
 - (void)pumpStep:(NSUInteger)generation {
@@ -533,6 +562,8 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     const size_t chunkFrames = 1024;
     size_t bytesPerFrame = _format.mBytesPerFrame;
     if (bytesPerFrame == 0) bytesPerFrame = 4;
+    if (bytesPerFrame > 16) bytesPerFrame = 16;
+    [self ensureScratch];
 
     if (generation != _pumpGeneration) return;
 
@@ -541,8 +572,8 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
         return;
     }
 
-    void *scratch = malloc(chunkFrames * bytesPerFrame);
-    float *floats = (float *)malloc(chunkFrames * 2 * sizeof(float));
+    void *scratch = _pumpScratch;
+    float *floats = _pumpFloats;
     int moved = [_input shiftBytes:chunkFrames * bytesPerFrame buffer:scratch];
     if (moved <= 0) {
         if (_input.endOfInput) {
@@ -563,8 +594,6 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
             written += wrote;
         }
     }
-    free(scratch);
-    free(floats);
 
     if (_finished && waRingCount(&_ring) == 0 && !_nextOpened) {
         pthread_mutex_lock(&_stateLock);
@@ -679,20 +708,6 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     _volume = MAX(0.0f, MIN(1.0f, volume));
 }
 
-- (void)fadeToVolume:(float)volume duration:(NSTimeInterval)duration completion:(void (^)(void))completion {
-    double sr = _format.mSampleRate > 0 ? _format.mSampleRate : 44100.0;
-    if (duration < 0.01) duration = 0.01;
-    _fadeFrom = _volume;
-    _fadeTo = MAX(0.0f, MIN(1.0f, volume));
-    _fadeTotal = (size_t)(duration * sr);
-    _fadeDone = 0;
-    _fading = YES;
-    if (completion) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (completion) completion();
-        });
-    }
-}
 
 #pragma mark - EQ
 
