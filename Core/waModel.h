@@ -44,6 +44,7 @@ extern NSString * const waUserType;
 @property (nonatomic, copy) NSString *previewURL;
 @property (nonatomic, strong) NSArray *contributors;
 @property (nonatomic, assign) BOOL liked;
+@property (nonatomic, assign) BOOL genius;
 - (void)mergeFrom:(waTrack *)other;
 - (BOOL)needsHydration;
 @end
@@ -134,6 +135,8 @@ extern NSString * const waUserType;
 @property (nonatomic, copy) NSString *email;
 @property (nonatomic, copy) NSString *pictureURL;
 @property (nonatomic, copy) NSString *country;
+@property (nonatomic, copy) NSString *offerName;
+@property (nonatomic, copy) NSString *joined;
 @property (nonatomic, assign) BOOL verified;
 @property (nonatomic, assign) BOOL canStreamLossless;
 @property (nonatomic, assign) BOOL canStreamHifi;

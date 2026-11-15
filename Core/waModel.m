@@ -38,7 +38,8 @@ static NSString *waHTTPArtwork(NSString *url) {
 static NSInteger waCDNEdge(NSInteger edge) {
     if (edge <= 300) return 250;
     if (edge <= 600) return 500;
-    return 1000;
+    if (edge <= 1200) return 1000;
+    return 1920;
 }
 
 static NSString *waCDNArtwork(NSString *hash, NSString *kind, NSInteger edge) {
@@ -152,6 +153,7 @@ static NSString *waPickCover(NSDictionary *dict) {
     self.previewURL = waString(dict[@"preview"]);
     self.preview = self.previewURL.length > 0;
     if ([dict[@"contributors"] isKindOfClass:[NSArray class]]) self.contributors = dict[@"contributors"];
+    self.genius = waBool(dict[@"genius"]);
     NSString *cover = waPickCover(album);
     if (!cover.length && self.md5.length) cover = waCDNArtwork(self.md5, @"cover", 500);
     if (!cover.length) cover = waPickCover(dict);
@@ -204,6 +206,7 @@ static NSString *waPickCover(NSDictionary *dict) {
     dict[@"readable"] = @(self.readable);
     dict[@"streamable"] = @(self.streamable);
     dict[@"liked"] = @(self.liked);
+    if (self.genius) dict[@"genius"] = @YES;
     if (self.isrc.length) dict[@"isrc"] = self.isrc;
     if (self.md5.length) dict[@"md5_image"] = self.md5;
     if (self.releaseDate.length) dict[@"release_date"] = self.releaseDate;
@@ -423,6 +426,8 @@ static NSString *waAlbumClassify(NSString *named, NSInteger typeCode, NSInteger 
     self.email = waString(dict[@"EMAIL"]) ?: waString(dict[@"email"]);
     self.pictureURL = waString(dict[@"USER_PICTURE"]) ?: waString(dict[@"picture"]);
     self.country = waString(dict[@"COUNTRY"]) ?: waString(dict[@"country"]);
+    self.offerName = waString(dict[@"OFFER_NAME"]) ?: waString(dict[@"offerName"]);
+    self.joined = waString(dict[@"INSCRIPTION_DATE"]) ?: waString(dict[@"inscriptionDate"]);
     self.verified = waBool(dict[@"verified"]);
     NSArray *options = dict[@"OPTIONS"];
     if ([options isKindOfClass:[NSArray class]]) self.offers = options;
