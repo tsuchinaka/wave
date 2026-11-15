@@ -1,5 +1,6 @@
 #import "waPlayer.h"
 #import "waSession.h"
+#import "waCast.h"
 #import "waAudioCore.h"
 #import "waLog.h"
 #import "waDownloader.h"
@@ -17,7 +18,9 @@ static NSString * const waShuffleKey = @"wave.shuffle";
 static NSString * const waRepeatKey = @"wave.repeat";
 static NSString * const waCrossfadeKey = @"wave.crossfade";
 static NSString * const waCrossfadeDurationKey = @"wave.crossfadeDuration";
+static NSString * const waGeniusKey = @"wave.genius";
 static NSString * const waEQKey = @"wave.eq";
+static NSString * const waEQGainsKey = @"wave.eq.gains";
 static NSString * const waLimiterKey = @"wave.compressor";
 static NSString * const waVolumeKey = @"wave.volume";
 
@@ -38,6 +41,9 @@ static NSString * const waVolumeKey = @"wave.volume";
 @property (nonatomic, strong) NSString *presetName;
 @property (nonatomic, assign) BOOL audioSessionReady;
 @property (nonatomic, assign) NSUInteger loadGeneration;
+@property (nonatomic, assign) NSUInteger geniusGeneration;
+@property (nonatomic, copy) NSString *geniusLoadingID;
+@property (nonatomic, assign) BOOL waitingForGenius;
 @property (nonatomic, assign) NSUInteger upcomingIndex;
 @property (nonatomic, assign) BOOL upcomingValid;
 @property (nonatomic, copy) NSString *nowPlayingArtworkKey;
@@ -49,7 +55,7 @@ static NSString * const waVolumeKey = @"wave.volume";
 @end
 
 @implementation waPlayer {
-    float _gains[5];
+    float _gains[WA_EQ_BANDS];
 }
 
 + (waPlayer *)shared {
@@ -65,18 +71,25 @@ static NSString * const waVolumeKey = @"wave.volume";
         _shuffleHistory = [[NSMutableArray alloc] init];
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         _shuffleEnabled = [defaults boolForKey:waShuffleKey];
+        _geniusEnabled = [defaults objectForKey:waGeniusKey] ? [defaults boolForKey:waGeniusKey] : YES;
         _repeatMode = (waRepeatMode)[defaults integerForKey:waRepeatKey];
         _crossfadeEnabled = [defaults boolForKey:waCrossfadeKey];
         _crossfadeDuration = [defaults objectForKey:waCrossfadeDurationKey] ? [defaults doubleForKey:waCrossfadeDurationKey] : 4.0;
         _volume = [defaults objectForKey:waVolumeKey] ? [defaults floatForKey:waVolumeKey] : 1.0f;
         _presetName = [defaults stringForKey:waEQKey] ?: @"Flat";
         [self gainsForPreset:_presetName];
+        NSArray *stored = [defaults arrayForKey:waEQGainsKey];
+        for (NSUInteger band = 0; band < stored.count && band < WA_EQ_BANDS; band++) {
+            _gains[band] = [[stored objectAtIndex:band] floatValue];
+        }
         _persistQueue = dispatch_queue_create("wave.player.persist", DISPATCH_QUEUE_SERIAL);
         [self restoreQueue];
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
         [center addObserver:self selector:@selector(persistNow) name:UIApplicationDidEnterBackgroundNotification object:nil];
         [center addObserver:self selector:@selector(persistNow) name:UIApplicationWillResignActiveNotification object:nil];
         [center addObserver:self selector:@selector(persistNow) name:UIApplicationWillTerminateNotification object:nil];
+        [center addObserver:self selector:@selector(castTrackFinished) name:@"waCastTrackDidFinish" object:nil];
+        [center addObserver:self selector:@selector(castStatusChanged) name:waCastStatusDidChangeNotification object:nil];
     }
     return self;
 }
@@ -86,16 +99,23 @@ static NSString * const waVolumeKey = @"wave.volume";
 - (NSArray *)queue { return [self.items copy]; }
 - (NSUInteger)index { return self.cursor; }
 - (waTrack *)currentTrack { return self.cursor < self.items.count ? [self.items objectAtIndex:self.cursor] : nil; }
-- (BOOL)seekable { return self.core.ready && !self.loading; }
+- (BOOL)seekable { return (self.core.ready && !self.loading) || [waCast shared].target != nil; }
 - (NSTimeInterval)currentTime {
     if (self.core) return self.core.position;
+    if ([waCast shared].target) return [waCast shared].position;
     return self.resumePosition;
 }
 - (NSTimeInterval)outputTime {
     if (self.core) return self.core.outputPosition;
+    if ([waCast shared].target) return [waCast shared].position;
     return self.resumePosition;
 }
 - (NSTimeInterval)duration {
+    if ([waCast shared].target) {
+        NSTimeInterval cast = [waCast shared].duration;
+        if (cast > 0.0) return cast;
+        if (self.currentTrack.duration > 0.0) return self.currentTrack.duration;
+    }
     NSTimeInterval value = self.core ? self.core.duration : 0.0;
     if (value <= 0.0 && self.currentTrack) value = self.currentTrack.duration;
     return value;
@@ -114,6 +134,7 @@ static NSString * const waVolumeKey = @"wave.volume";
     } else {
         [self updateAutoOverlap];
     }
+    if ([waCast shared].target && !self.core) [self prefetchCastNext];
     [self notifyState];
 }
 
@@ -126,6 +147,7 @@ static NSString * const waVolumeKey = @"wave.volume";
         [self.core cancelNext];
         [self prefetchNext];
     }
+    if ([waCast shared].target && !self.core) [self prefetchCastNext];
     [self notifyState];
 }
 
@@ -144,6 +166,7 @@ static NSString * const waVolumeKey = @"wave.volume";
 - (void)setVolume:(float)volume {
     _volume = MAX(0.0f, MIN(1.0f, volume));
     self.core.volume = _volume;
+    if ([waCast shared].target) [[waCast shared] setVolume:_volume];
     [[NSUserDefaults standardUserDefaults] setFloat:_volume forKey:waVolumeKey];
 }
 
@@ -168,12 +191,72 @@ static NSString * const waVolumeKey = @"wave.volume";
     }
     self.contextArtworkURL = art;
     [self.shuffleHistory removeAllObjects];
+    self.geniusGeneration++;
+    self.geniusLoadingID = nil;
+    self.waitingForGenius = NO;
     [self notifyQueue];
     [self startCurrentTrack];
 }
 
 - (void)playTrack:(waTrack *)track {
     [self playTracks:@[track] startAt:0 context:track.albumTitle];
+}
+
+- (void)setGeniusEnabled:(BOOL)enabled {
+    _geniusEnabled = enabled;
+    [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:waGeniusKey];
+    self.geniusGeneration++;
+    self.geniusLoadingID = nil;
+    self.waitingForGenius = NO;
+    if (enabled) [self refillGenius];
+    [self notifyState];
+}
+
+- (void)refillGenius {
+    if (!self.geniusEnabled || self.repeatMode != waRepeatOff) return;
+    if (!self.items.count || self.cursor >= self.items.count) return;
+    if (self.items.count - self.cursor > 3) return;
+    waTrack *seed = self.currentTrack;
+    if (!seed.identifier.length || [seed.identifier isEqualToString:self.geniusLoadingID]) return;
+    self.geniusLoadingID = seed.identifier;
+    NSUInteger generation = self.geniusGeneration;
+    __weak waPlayer *weakSelf = self;
+    [[waSession shared] geniusForTrack:seed completion:^(NSArray *tracks, NSError *error) {
+        waPlayer *strongSelf = weakSelf;
+        if (!strongSelf || generation != strongSelf.geniusGeneration) return;
+        strongSelf.geniusLoadingID = nil;
+        if (!strongSelf.geniusEnabled || strongSelf.repeatMode != waRepeatOff || error || !tracks.count) {
+            if (strongSelf.waitingForGenius) { strongSelf.waitingForGenius = NO; [strongSelf stop]; }
+            return;
+        }
+        NSMutableSet *known = [NSMutableSet set];
+        for (waTrack *item in strongSelf.items) if (item.identifier.length) [known addObject:item.identifier];
+        NSMutableArray *fresh = [NSMutableArray array];
+        for (waTrack *item in tracks) {
+            if (![item isKindOfClass:[waTrack class]] || !item.identifier.length) continue;
+            if ([known containsObject:item.identifier]) continue;
+            item.genius = YES;
+            [known addObject:item.identifier];
+            [fresh addObject:item];
+        }
+        if (!fresh.count) {
+            if (strongSelf.waitingForGenius) { strongSelf.waitingForGenius = NO; [strongSelf stop]; }
+            return;
+        }
+        while (strongSelf.items.count + fresh.count > 200 && strongSelf.cursor > 40) {
+            [strongSelf.items removeObjectAtIndex:0];
+            strongSelf.cursor--;
+            if (strongSelf.upcomingValid) {
+                if (strongSelf.upcomingIndex == 0) strongSelf.upcomingValid = NO;
+                else strongSelf.upcomingIndex--;
+            }
+        }
+        BOOL waiting = strongSelf.waitingForGenius;
+        strongSelf.waitingForGenius = NO;
+        [strongSelf appendTracks:fresh next:NO];
+        [[waLog shared] log:@"genius +%lu", (unsigned long)fresh.count];
+        if (waiting && strongSelf.cursor + 1 < strongSelf.items.count) [strongSelf advanceBy:1 manual:NO];
+    }];
 }
 
 - (void)appendTracks:(NSArray *)tracks next:(BOOL)next {
@@ -187,6 +270,7 @@ static NSString * const waVolumeKey = @"wave.volume";
         [self.core cancelNext];
         [self prefetchNext];
     }
+    if ([waCast shared].target && !self.core) [self prefetchCastNext];
     [self notifyQueue];
 }
 
@@ -199,11 +283,63 @@ static NSString * const waVolumeKey = @"wave.volume";
     self.lastError = nil;
     [self notifyState];
 
+    if ([waCast shared].target) {
+        [self tearDownCore];
+        [self applyRemoteCenter];
+        [self notifyTrack];
+        [[waLog shared] log:@"cast play %@ %@", track.identifier, track.title];
+        NSTimeInterval startAt = self.resumePosition;
+        self.resumePosition = 0.0;
+        __weak waPlayer *weakSelf = self;
+        void (^castGo)(void) = ^{
+            waPlayer *strongSelf = weakSelf;
+            if (!strongSelf || generation != strongSelf.loadGeneration) return;
+            waTrack *ready = strongSelf.currentTrack;
+            if (!ready) return;
+            [[waSession shared] streamURLForTrack:ready completion:^(NSURL *url, waQuality quality, NSError *error) {
+                waPlayer *castSelf = weakSelf;
+                if (!castSelf || generation != castSelf.loadGeneration) return;
+                if (error || !url) {
+                    castSelf.loading = NO;
+                    castSelf.lastError = error;
+                    [[waLog shared] log:@"cast stream %@", error.localizedDescription];
+                    [castSelf notifyState];
+                    return;
+                }
+                NSString *art = [[waSession shared] localArtworkPathForTrack:ready];
+                if (!art.length) art = [ready bestArtworkURL] ?: [ready artworkURLForSide:1920.0];
+                castSelf.activeQuality = quality;
+                castSelf.loading = NO;
+                castSelf.playing = YES;
+                [[waCast shared] playStream:url title:ready.title artist:ready.artistName album:ready.albumTitle artwork:art duration:ready.duration startAt:startAt];
+                [castSelf beginTicker];
+                [castSelf notifyState];
+                [castSelf notifyTrack];
+                [castSelf updateNowPlaying];
+                [castSelf logHistory];
+                [castSelf refillGenius];
+                [castSelf prefetchCastNext];
+            }];
+        };
+        if (track.needsHydration) {
+            [[waSession shared] hydrateTrack:track completion:^(waTrack *full) {
+                if (generation != self.loadGeneration) return;
+                if (!self.contextArtworkURL.length) self.contextArtworkURL = [full bestArtworkURL];
+                [self notifyTrack];
+                [self updateNowPlaying];
+                castGo();
+            }];
+        } else {
+            castGo();
+        }
+        return;
+    }
+
     [self tearDownCore];
     waAudioCore *core = [[waAudioCore alloc] init];
     core.delegate = self;
     core.volume = self.volume;
-    float gains[5];
+    float gains[WA_EQ_BANDS];
     memcpy(gains, _gains, sizeof(gains));
     [core setGains:gains];
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -302,6 +438,22 @@ static NSString * const waVolumeKey = @"wave.volume";
     return next;
 }
 
+- (void)prefetchCastNext {
+    if (![waCast shared].target || self.core) return;
+    if (self.repeatMode == waRepeatOne) return;
+    NSUInteger next = [self indexAfterCurrent];
+    if (next == NSNotFound || next >= self.items.count) return;
+    waTrack *track = [self.items objectAtIndex:next];
+    if (![track isKindOfClass:[waTrack class]]) return;
+    NSUInteger generation = self.loadGeneration;
+    [[waSession shared] streamURLForTrack:track completion:^(NSURL *url, waQuality granted, NSError *error) {
+        (void)granted;
+        if (generation != self.loadGeneration) return;
+        if (error || !url) return;
+        [[waCast shared] prepareStream:url title:track.title artist:track.artistName album:track.albumTitle artwork:[track bestArtworkURL] duration:track.duration];
+    }];
+}
+
 - (void)prefetchNext {
     NSUInteger next = [self indexAfterCurrent];
     if (next == NSNotFound || !self.core) return;
@@ -337,6 +489,7 @@ static NSString * const waVolumeKey = @"wave.volume";
 }
 
 - (void)stop {
+    if ([waCast shared].target) [[waCast shared] stopPlayback];
     [self tearDownCore];
     self.playing = NO;
     self.loading = NO;
@@ -344,6 +497,15 @@ static NSString * const waVolumeKey = @"wave.volume";
 }
 
 - (void)pause {
+    if ([waCast shared].target && !self.core) {
+        [[waCast shared] pause];
+        self.playing = NO;
+        self.resumePosition = [waCast shared].position;
+        [self notifyState];
+        [self updateNowPlaying];
+        [self persistNow];
+        return;
+    }
     if (!self.core) return;
     [self.core pause];
     self.playing = NO;
@@ -354,6 +516,14 @@ static NSString * const waVolumeKey = @"wave.volume";
 }
 
 - (void)resume {
+    if ([waCast shared].target && !self.core) {
+        [[waCast shared] play];
+        self.playing = YES;
+        [self beginTicker];
+        [self notifyState];
+        [self updateNowPlaying];
+        return;
+    }
     if (!self.core) { [self startCurrentTrack]; return; }
     [self.core play];
     self.playing = YES;
@@ -368,6 +538,13 @@ static NSString * const waVolumeKey = @"wave.volume";
 }
 
 - (void)seekTo:(NSTimeInterval)time {
+    if ([waCast shared].target && !self.core) {
+        [[waCast shared] seekTo:time];
+        [self notifyProgress];
+        [self updateNowPlaying];
+        [self schedulePersist];
+        return;
+    }
     if (!self.core.ready) return;
     BOOL wasOverlapping = self.core.overlapping;
     self.seekingNow = YES;
@@ -393,9 +570,16 @@ static NSString * const waVolumeKey = @"wave.volume";
     [self startCurrentTrack];
 }
 
+- (void)refreshOutput {
+    NSTimeInterval pos = self.currentTime;
+    if (pos > 1.0) self.resumePosition = pos;
+    self.upcomingValid = NO;
+    if (self.currentTrack) [self startCurrentTrack];
+}
+
 - (void)advanceBy:(NSInteger)delta manual:(BOOL)manual {
     if (!self.items.count) return;
-    if (manual && delta < 0 && self.core.ready && self.currentTime > 3.0) {
+    if (manual && delta < 0 && self.currentTime > 3.0) {
         [self seekTo:0];
         [self resume];
         return;
@@ -425,7 +609,11 @@ static NSString * const waVolumeKey = @"wave.volume";
         NSInteger next = (NSInteger)self.cursor + delta;
         if (next >= (NSInteger)self.items.count) {
             if (self.repeatMode == waRepeatAll) next = 0;
-            else { [self stop]; return; }
+            else if (self.geniusEnabled) {
+                self.waitingForGenius = YES;
+                [self refillGenius];
+                return;
+            } else { [self stop]; return; }
         }
         if (next < 0) {
             if (self.repeatMode == waRepeatAll) next = (NSInteger)self.items.count - 1;
@@ -457,6 +645,21 @@ static NSString * const waVolumeKey = @"wave.volume";
     [self startCurrentTrack];
 }
 
+- (void)castTrackFinished {
+    if (![waCast shared].target || self.core) return;
+    [self handleTrackEnd:NO];
+}
+
+- (void)castStatusChanged {
+    if (![waCast shared].target || self.core || self.loading) return;
+    BOOL on = [waCast shared].playing;
+    if (self.playing != on) {
+        self.playing = on;
+        [self notifyState];
+        [self updateNowPlaying];
+    }
+}
+
 - (void)handleTrackEnd:(BOOL)failed {
     if (failed) return;
     [self advanceBy:1 manual:NO];
@@ -481,6 +684,7 @@ static NSString * const waVolumeKey = @"wave.volume";
         [self.core cancelNext];
         [self prefetchNext];
     }
+    if ([waCast shared].target && !self.core) [self prefetchCastNext];
     [self notifyQueue];
 }
 
@@ -497,11 +701,14 @@ static NSString * const waVolumeKey = @"wave.volume";
         [self.core cancelNext];
         [self prefetchNext];
     }
+    if ([waCast shared].target && !self.core) [self prefetchCastNext];
     [self notifyQueue];
 }
 
 - (void)clearQueue {
     [self stop];
+    self.geniusGeneration++;
+    self.waitingForGenius = NO;
     [self.items removeAllObjects];
     self.cursor = 0;
     self.resumePosition = 0.0;
@@ -532,6 +739,7 @@ static NSString * const waVolumeKey = @"wave.volume";
     [self updateNowPlaying];
     [self logHistory];
     [self notifyProgress];
+    [self refillGenius];
 }
 
 - (void)audioCoreDidFinish:(waAudioCore *)core {
@@ -556,6 +764,7 @@ static NSString * const waVolumeKey = @"wave.volume";
     [self updateNowPlaying];
     [self logHistory];
     [self prefetchNext];
+    [self refillGenius];
 }
 
 - (void)audioCore:(waAudioCore *)core didFail:(NSError *)error {
@@ -578,6 +787,12 @@ static NSString * const waVolumeKey = @"wave.volume";
 
 - (void)tick:(NSTimer *)timer {
     (void)timer;
+    static NSTimeInterval lastCastRecover;
+    NSTimeInterval nowTick = [NSDate timeIntervalSinceReferenceDate];
+    if (nowTick - lastCastRecover > 2.0) {
+        lastCastRecover = nowTick;
+        if ([waCast shared].target && ![waCast shared].connected) [[waCast shared] recover];
+    }
     [self notifyProgress];
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (self.playing && now - self.lastPersistTime > 5.0) {
@@ -705,18 +920,27 @@ static NSString * const waVolumeKey = @"wave.volume";
 
 #pragma mark - EQ
 
+- (void)storeGains {
+    NSMutableArray *stored = [NSMutableArray arrayWithCapacity:WA_EQ_BANDS];
+    for (int band = 0; band < WA_EQ_BANDS; band++) [stored addObject:[NSNumber numberWithFloat:_gains[band]]];
+    [[NSUserDefaults standardUserDefaults] setObject:stored forKey:waEQGainsKey];
+}
+
 - (void)setGain:(float)gain forBand:(NSUInteger)band {
-    if (band >= 5) return;
+    if (band >= WA_EQ_BANDS) return;
     _gains[band] = MAX(-12.0f, MIN(12.0f, gain));
+    self.presetName = @"Custom";
     [self.core setGains:_gains];
+    [self storeGains];
+    [[NSUserDefaults standardUserDefaults] setObject:self.presetName forKey:waEQKey];
 }
 
 - (float)gainForBand:(NSUInteger)band {
-    return band < 5 ? _gains[band] : 0.0f;
+    return band < WA_EQ_BANDS ? _gains[band] : 0.0f;
 }
 
 - (NSArray *)equalizerPresets {
-    return @[@"Flat", @"Bass Booster", @"Rock", @"Pop", @"Vocal", @"Treble"];
+    return @[@"Flat", @"Bass Booster", @"Treble", @"Vocal", @"Rock", @"Pop", @"Dance", @"Classical", @"Electronic", @"Loudness"];
 }
 
 - (NSString *)equalizerPresetName { return self.presetName; }
@@ -725,22 +949,32 @@ static NSString * const waVolumeKey = @"wave.volume";
     self.presetName = name ?: @"Flat";
     [self gainsForPreset:self.presetName];
     [self.core setGains:_gains];
+    [self storeGains];
     [[NSUserDefaults standardUserDefaults] setObject:self.presetName forKey:waEQKey];
 }
 
 - (void)gainsForPreset:(NSString *)name {
-    float flat[5] = {0, 0, 0, 0, 0};
-    float bass[5] = {7, 4, 0, 0, -1};
-    float rock[5] = {5, 2, -1, 1, 3};
-    float pop[5] = {-1, 2, 5, 2, -1};
-    float vocal[5] = {-2, 0, 4, 4, 1};
-    float treble[5] = {-2, -1, 0, 3, 6};
+    // Ten octave bands: 31, 62, 125, 250, 500, 1k, 2k, 4k, 8k, 16k.
+    float flat[WA_EQ_BANDS]       = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    float bass[WA_EQ_BANDS]       = {8, 7, 6, 4, 1, 0, 0, 0, 0, 0};
+    float treble[WA_EQ_BANDS]     = {0, 0, 0, 0, 0, 1, 3, 5, 7, 8};
+    float vocal[WA_EQ_BANDS]      = {-2, -1, 0, 1, 3, 4, 4, 3, 1, 0};
+    float rock[WA_EQ_BANDS]       = {5, 4, 3, 1, -1, -1, 1, 3, 4, 5};
+    float pop[WA_EQ_BANDS]        = {-1, 1, 3, 4, 5, 4, 2, 1, -1, -1};
+    float dance[WA_EQ_BANDS]      = {6, 5, 3, 0, -1, 0, 2, 4, 5, 4};
+    float classical[WA_EQ_BANDS]  = {4, 3, 2, 1, -1, -1, 0, 2, 3, 4};
+    float electronic[WA_EQ_BANDS] = {6, 5, 2, 0, -2, 1, 2, 4, 6, 6};
+    float loudness[WA_EQ_BANDS]   = {6, 4, 2, 0, -1, -1, 0, 2, 4, 6};
     const float *source = flat;
     if ([name isEqualToString:@"Bass Booster"]) source = bass;
+    else if ([name isEqualToString:@"Treble"]) source = treble;
+    else if ([name isEqualToString:@"Vocal"]) source = vocal;
     else if ([name isEqualToString:@"Rock"]) source = rock;
     else if ([name isEqualToString:@"Pop"]) source = pop;
-    else if ([name isEqualToString:@"Vocal"]) source = vocal;
-    else if ([name isEqualToString:@"Treble"]) source = treble;
+    else if ([name isEqualToString:@"Dance"]) source = dance;
+    else if ([name isEqualToString:@"Classical"]) source = classical;
+    else if ([name isEqualToString:@"Electronic"]) source = electronic;
+    else if ([name isEqualToString:@"Loudness"]) source = loudness;
     memcpy(_gains, source, sizeof(_gains));
 }
 

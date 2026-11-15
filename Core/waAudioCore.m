@@ -74,18 +74,19 @@ static void waRingClear(waRing *ring) {
     pthread_mutex_unlock(&ring->lock);
 }
 
-// one biquad per band per channel
+// One peaking biquad per band per channel. Ten bands, ISO octave centers.
 typedef struct {
     float b0, b1, b2, a1, a2;
     float x1, x2, y1, y2;
 } waBiquad;
 
 typedef struct {
-    waBiquad bands[5][2];
-    float gains[5];
+    waBiquad bands[WA_EQ_BANDS][2];
+    float gains[WA_EQ_BANDS];
+    float preGain;
     float sampleRate;
+    BOOL active;
     BOOL limiter;
-    float limiterGain;
 } waEQState;
 
 @interface waAudioCore () {
@@ -156,7 +157,7 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
         _fadeTo = 1.0f;
         _eq.sampleRate = 44100.0f;
         _eq.limiter = YES;
-        _eq.limiterGain = 1.0f;
+        _eq.preGain = 1.0f;
         pthread_mutex_init(&_stateLock, NULL);
         pthread_mutexattr_t attr;
         pthread_mutexattr_init(&attr);
@@ -294,6 +295,21 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     AudioSessionInitialize(NULL, NULL, NULL, NULL);
     UInt32 category = kAudioSessionCategory_MediaPlayback;
     AudioSessionSetProperty(kAudioSessionProperty_AudioCategory, sizeof(category), &category);
+    // Ask the DAC to clock at the source rate so the mixer does not resample.
+    // A 44.1 kHz stream on a 48 kHz converter is the usual cause of a dull,
+    // slightly harsh top end on this hardware.
+    Float64 wanted = _format.mSampleRate;
+    Float64 current = 0;
+    UInt32 size = sizeof(current);
+    AudioSessionGetProperty(kAudioSessionProperty_CurrentHardwareSampleRate, &size, &current);
+    AudioSessionSetProperty(kAudioSessionProperty_PreferredHardwareSampleRate, sizeof(wanted), &wanted);
+    if (fabs(current - wanted) > 1.0) {
+        AudioSessionSetActive(false);
+        AudioSessionSetActive(true);
+        size = sizeof(current);
+        AudioSessionGetProperty(kAudioSessionProperty_CurrentHardwareSampleRate, &size, &current);
+    }
+    [[waLog shared] log:@"dac %.0f source %.0f", current, wanted];
 
     OSStatus status = AudioQueueNewOutput(&out, waAudioQueueCallback, (__bridge void *)self, NULL, NULL, 0, &_queue);
     if (status != noErr) {
@@ -680,33 +696,142 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
 
 #pragma mark - EQ
 
-- (void)rebuildEQ {
-    static const float frequencies[5] = {60.0f, 230.0f, 910.0f, 3600.0f, 14000.0f};
+static const float waEQFrequencies[WA_EQ_BANDS] = {31.0f, 62.0f, 125.0f, 250.0f, 500.0f, 1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f};
+static const float waEQQ = 1.41421356f;
+static const float waEQCeiling = 0.891250938f;
+
+static void waEQUnity(waEQCoeff *coeff) {
+    coeff->b0 = 1.0f; coeff->b1 = 0.0f; coeff->b2 = 0.0f;
+    coeff->a1 = 0.0f; coeff->a2 = 0.0f;
+}
+
+static void waEQStore(waEQCoeff *coeff, float b0, float b1, float b2, float a0, float a1, float a2) {
+    float inv = 1.0f / a0;
+    coeff->b0 = b0 * inv; coeff->b1 = b1 * inv; coeff->b2 = b2 * inv;
+    coeff->a1 = a1 * inv; coeff->a2 = a2 * inv;
+}
+
+static void waEQPeaking(waEQCoeff *coeff, float gainDb, float freq, float sr) {
+    float amplitude = powf(10.0f, gainDb / 40.0f);
+    float omega = 2.0f * (float)M_PI * freq / sr;
+    float alpha = sinf(omega) / (2.0f * waEQQ);
+    float cosw = cosf(omega);
+    waEQStore(coeff,
+              1.0f + alpha * amplitude, -2.0f * cosw, 1.0f - alpha * amplitude,
+              1.0f + alpha / amplitude, -2.0f * cosw, 1.0f - alpha / amplitude);
+}
+
+static void waEQLowShelf(waEQCoeff *coeff, float gainDb, float freq, float sr) {
+    float amplitude = powf(10.0f, gainDb / 40.0f);
+    float omega = 2.0f * (float)M_PI * freq / sr;
+    float cosw = cosf(omega);
+    float boost = 2.0f * sqrtf(amplitude) * sinf(omega) / sqrtf(2.0f);
+    float upper = amplitude + 1.0f;
+    float lower = amplitude - 1.0f;
+    waEQStore(coeff,
+              amplitude * (upper - lower * cosw + boost),
+              2.0f * amplitude * (lower - upper * cosw),
+              amplitude * (upper - lower * cosw - boost),
+              upper + lower * cosw + boost,
+              -2.0f * (lower + upper * cosw),
+              upper + lower * cosw - boost);
+}
+
+static void waEQHighShelf(waEQCoeff *coeff, float gainDb, float freq, float sr) {
+    float amplitude = powf(10.0f, gainDb / 40.0f);
+    float omega = 2.0f * (float)M_PI * freq / sr;
+    float cosw = cosf(omega);
+    float boost = 2.0f * sqrtf(amplitude) * sinf(omega) / sqrtf(2.0f);
+    float upper = amplitude + 1.0f;
+    float lower = amplitude - 1.0f;
+    waEQStore(coeff,
+              amplitude * (upper + lower * cosw + boost),
+              -2.0f * amplitude * (lower + upper * cosw),
+              amplitude * (upper + lower * cosw - boost),
+              upper - lower * cosw + boost,
+              2.0f * (lower - upper * cosw),
+              upper - lower * cosw - boost);
+}
+
+static float waEQCoeffMag(const waEQCoeff *coeff, float omega) {
+    float cw = cosf(omega), sw = sinf(omega);
+    float c2 = cosf(2.0f * omega), s2 = sinf(2.0f * omega);
+    float numRe = coeff->b0 + coeff->b1 * cw + coeff->b2 * c2;
+    float numIm = -(coeff->b1 * sw + coeff->b2 * s2);
+    float denRe = 1.0f + coeff->a1 * cw + coeff->a2 * c2;
+    float denIm = -(coeff->a1 * sw + coeff->a2 * s2);
+    float den = denRe * denRe + denIm * denIm;
+    if (den < 1.0e-12f) return 1.0f;
+    return sqrtf((numRe * numRe + numIm * numIm) / den);
+}
+
+float waEQBuild(const float *gains, float sampleRate, waEQCoeff coeffs[WA_EQ_BANDS]) {
+    float sr = sampleRate > 0 ? sampleRate : 44100.0f;
+    for (int band = 0; band < WA_EQ_BANDS; band++) {
+        float freq = waEQFrequencies[band];
+        float gain = gains ? gains[band] : 0.0f;
+        if (freq >= sr * 0.49f || fabsf(gain) < 0.05f) {
+            waEQUnity(&coeffs[band]);
+            continue;
+        }
+        if (band == 0) waEQLowShelf(&coeffs[band], gain, freq, sr);
+        else if (band == WA_EQ_BANDS - 1) waEQHighShelf(&coeffs[band], gain, freq, sr);
+        else waEQPeaking(&coeffs[band], gain, freq, sr);
+    }
+    float peak = 1.0f;
+    for (int step = 0; step < 64; step++) {
+        float freq = 10.0f * powf(2000.0f, step / 63.0f);
+        if (freq >= sr * 0.49f) break;
+        float omega = 2.0f * (float)M_PI * freq / sr;
+        float mag = 1.0f;
+        for (int band = 0; band < WA_EQ_BANDS; band++) mag *= waEQCoeffMag(&coeffs[band], omega);
+        if (mag > peak) peak = mag;
+    }
+    // Only a boost is pulled back, and only to -1 dBFS. A flat or cut curve
+    // passes at unity so a mastered track still reaches the DAC full scale.
+    return peak > 1.0f ? waEQCeiling / peak : 1.0f;
+}
+
+float waEQMagnitudeDB(const waEQCoeff *coeffs, float sampleRate, float frequency) {
+    float sr = sampleRate > 0 ? sampleRate : 44100.0f;
+    if (frequency < 1.0f || frequency >= sr * 0.49f) return 0.0f;
+    float omega = 2.0f * (float)M_PI * frequency / sr;
+    float mag = 1.0f;
+    for (int band = 0; band < WA_EQ_BANDS; band++) mag *= waEQCoeffMag(&coeffs[band], omega);
+    return 20.0f * log10f(mag > 1.0e-8f ? mag : 1.0e-8f);
+}
+
+// Coefficients only. The filter memory is left untouched so a live gain
+// change does not click; a sample-rate change is the one case that must
+// drop it, because the old state was computed against a different clock.
+- (void)rebuildEQResettingState:(BOOL)resetState {
+    waEQCoeff coeffs[WA_EQ_BANDS];
     float sr = _eq.sampleRate > 0 ? _eq.sampleRate : 44100.0f;
-    for (int band = 0; band < 5; band++) {
-        float gainDb = _eq.gains[band];
-        float amplitude = powf(10.0f, gainDb / 40.0f);
-        float omega = 2.0f * (float)M_PI * frequencies[band] / sr;
-        float alpha = sinf(omega) / (2.0f * 1.0f);
-        float b0 = 1.0f + alpha * amplitude;
-        float b1 = -2.0f * cosf(omega);
-        float b2 = 1.0f - alpha * amplitude;
-        float a0 = 1.0f + alpha / amplitude;
-        float a1 = -2.0f * cosf(omega);
-        float a2 = 1.0f - alpha / amplitude;
+    _eq.preGain = waEQBuild(_eq.gains, sr, coeffs);
+    BOOL active = NO;
+    for (int band = 0; band < WA_EQ_BANDS; band++) {
+        if (fabsf(_eq.gains[band]) > 0.05f) active = YES;
         for (int ch = 0; ch < 2; ch++) {
-            waBiquad *q = &_eq.bands[band][ch];
-            q->b0 = b0 / a0; q->b1 = b1 / a0; q->b2 = b2 / a0;
-            q->a1 = a1 / a0; q->a2 = a2 / a0;
-            q->x1 = q->x2 = q->y1 = q->y2 = 0.0f;
+            waBiquad *filter = &_eq.bands[band][ch];
+            filter->b0 = coeffs[band].b0;
+            filter->b1 = coeffs[band].b1;
+            filter->b2 = coeffs[band].b2;
+            filter->a1 = coeffs[band].a1;
+            filter->a2 = coeffs[band].a2;
+            if (resetState) filter->x1 = filter->x2 = filter->y1 = filter->y2 = 0.0f;
         }
     }
+    _eq.active = active;
+}
+
+- (void)rebuildEQ {
+    [self rebuildEQResettingState:YES];
 }
 
 - (void)setGains:(const float *)gains {
     if (!gains) return;
-    for (int i = 0; i < 5; i++) _eq.gains[i] = gains[i];
-    [self rebuildEQ];
+    for (int i = 0; i < WA_EQ_BANDS; i++) _eq.gains[i] = gains[i];
+    [self rebuildEQResettingState:NO];
 }
 
 - (void)setLimiterEnabled:(BOOL)enabled {
@@ -718,6 +843,15 @@ static inline float waProcessBiquad(waBiquad *q, float x) {
     q->x2 = q->x1; q->x1 = x;
     q->y2 = q->y1; q->y1 = y;
     return y;
+}
+
+// Exact below full scale, so a hot master is not rounded. Only a sample that
+// already exceeds the DAC range is eased back, and it never squares off.
+static inline float waSoftCeiling(float x) {
+    float ax = fabsf(x);
+    if (ax <= 1.0f) return x;
+    float shaped = 1.0f + 0.02f * tanhf((ax - 1.0f) / 0.02f);
+    return x < 0.0f ? -shaped : shaped;
 }
 
 - (void)processBuffer:(float *)samples frames:(size_t)frames {
@@ -733,23 +867,25 @@ static inline float waProcessBiquad(waBiquad *q, float x) {
                 _fading = NO;
             }
         }
-        float left = samples[i * 2];
-        float right = samples[i * 2 + 1];
-        for (int band = 0; band < 5; band++) {
-            left = waProcessBiquad(&_eq.bands[band][0], left);
-            right = waProcessBiquad(&_eq.bands[band][1], right);
+        float left = samples[i * 2] * _eq.preGain;
+        float right = samples[i * 2 + 1] * _eq.preGain;
+        if (_eq.active) {
+            for (int band = 0; band < WA_EQ_BANDS; band++) {
+                left = waProcessBiquad(&_eq.bands[band][0], left);
+                right = waProcessBiquad(&_eq.bands[band][1], right);
+            }
         }
         left *= volume;
         right *= volume;
         if (_eq.limiter) {
-            float peak = MAX(fabsf(left), fabsf(right));
-            float target = peak > 0.98f ? 0.98f / peak : 1.0f;
-            _eq.limiterGain = target < _eq.limiterGain ? target : (_eq.limiterGain * 0.9995f + target * 0.0005f);
-            left *= _eq.limiterGain;
-            right *= _eq.limiterGain;
+            left = waSoftCeiling(left);
+            right = waSoftCeiling(right);
+        } else {
+            if (left > 1.0f) left = 1.0f; else if (left < -1.0f) left = -1.0f;
+            if (right > 1.0f) right = 1.0f; else if (right < -1.0f) right = -1.0f;
         }
-        samples[i * 2] = MAX(-1.0f, MIN(1.0f, left));
-        samples[i * 2 + 1] = MAX(-1.0f, MIN(1.0f, right));
+        samples[i * 2] = left;
+        samples[i * 2 + 1] = right;
     }
 }
 

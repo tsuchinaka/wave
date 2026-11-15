@@ -1,17 +1,84 @@
 #import "waEQController.h"
 #import "waPlayer.h"
+#import "waRootController.h"
+#import "waAudioCore.h"
+#import <math.h>
 
-static NSString *waEQBandName(NSUInteger band) {
-    if (band == 0) return @"60 Hz";
-    if (band == 1) return @"230 Hz";
-    if (band == 2) return @"910 Hz";
-    if (band == 3) return @"3.6 kHz";
-    return @"14 kHz";
+#define WA_EQ_MIN -12.0f
+#define WA_EQ_MAX 12.0f
+
+static NSString *waEQBandLabel(NSUInteger band) {
+    static NSString *labels[WA_EQ_BANDS] = {@"31", @"62", @"125", @"250", @"500", @"1k", @"2k", @"4k", @"8k", @"16k"};
+    return band < WA_EQ_BANDS ? labels[band] : @"";
 }
 
-@interface waEQController ()
-@property (nonatomic, strong) UIScrollView *scrollView;
-@property (nonatomic, strong) UISegmentedControl *presetControl;
+@interface waEQGraphView : UIView {
+    float _gains[WA_EQ_BANDS];
+}
+- (void)setGains:(const float *)gains;
+@end
+
+@implementation waEQGraphView
+
+- (void)setGains:(const float *)gains {
+    if (gains) memcpy(_gains, gains, sizeof(_gains));
+    [self setNeedsDisplay];
+}
+
+- (id)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.backgroundColor = [UIColor whiteColor];
+        self.layer.cornerRadius = 8.0;
+        self.clipsToBounds = YES;
+    }
+    return self;
+}
+
+- (void)drawRect:(CGRect)rect {
+    (void)rect;
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGRect bounds = self.bounds;
+    CGFloat width = CGRectGetWidth(bounds);
+    CGFloat height = CGRectGetHeight(bounds);
+    CGFloat mid = height / 2.0;
+
+    [[UIColor colorWithWhite:0.92 alpha:1.0] setStroke];
+    CGContextSetLineWidth(ctx, 1.0);
+    CGFloat dashes[] = {2.0, 2.0};
+    CGContextSetLineDash(ctx, 0.0, dashes, 2);
+    for (int mark = -12; mark <= 12; mark += 6) {
+        CGFloat y = mid - (CGFloat)mark / WA_EQ_MAX * (mid - 6.0);
+        CGContextMoveToPoint(ctx, 0.0, y);
+        CGContextAddLineToPoint(ctx, width, y);
+    }
+    CGContextStrokePath(ctx);
+    CGContextSetLineDash(ctx, 0.0, NULL, 0);
+
+    CGContextSetLineWidth(ctx, 2.0);
+    [[UIColor colorWithRed:0.0 green:0.45 blue:0.85 alpha:1.0] setStroke];
+    waEQCoeff coeffs[WA_EQ_BANDS];
+    float preGain = waEQBuild(_gains, 44100.0f, coeffs);
+    float preDB = 20.0f * log10f(preGain > 0.0f ? preGain : 1.0f);
+    CGContextBeginPath(ctx);
+    int steps = (int)width;
+    for (int step = 0; step <= steps; step++) {
+        double fraction = steps ? (double)step / (double)steps : 0.0;
+        float freq = 20.0f * powf(1000.0f, (float)fraction);
+        float db = waEQMagnitudeDB(coeffs, 44100.0f, freq) + preDB;
+        if (db > WA_EQ_MAX) db = WA_EQ_MAX;
+        if (db < WA_EQ_MIN) db = WA_EQ_MIN;
+        CGFloat y = mid - (CGFloat)db / WA_EQ_MAX * (mid - 6.0);
+        if (step == 0) CGContextMoveToPoint(ctx, 0.0, y);
+        else CGContextAddLineToPoint(ctx, (CGFloat)step, y);
+    }
+    CGContextStrokePath(ctx);
+}
+
+@end
+
+@interface waEQController () <UIActionSheetDelegate>
+@property (nonatomic, strong) waEQGraphView *graph;
+@property (nonatomic, strong) UIButton *presetButton;
 @property (nonatomic, strong) NSMutableArray *sliders;
 @property (nonatomic, strong) NSMutableArray *valueLabels;
 @property (nonatomic, copy) NSArray *presetNames;
@@ -25,13 +92,13 @@ static NSString *waEQBandName(NSUInteger band) {
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation {
-    return orientation != UIInterfaceOrientationPortraitUpsideDown;
+    return orientation == UIInterfaceOrientationPortrait;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor groupTableViewBackgroundColor];
-    self.presetNames = [NSArray arrayWithObjects:@"Flat", @"Bass Booster", @"Rock", @"Pop", @"Vocal", @"Treble", nil];
+    self.presetNames = [[waPlayer shared] equalizerPresets];
     self.sliders = [NSMutableArray array];
     self.valueLabels = [NSMutableArray array];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Reset"
@@ -39,98 +106,130 @@ static NSString *waEQBandName(NSUInteger band) {
                                                                              target:self
                                                                              action:@selector(reset)];
 
-    self.scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
-    self.scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.scrollView.alwaysBounceVertical = YES;
-    [self.view addSubview:self.scrollView];
+    self.graph = [[waEQGraphView alloc] initWithFrame:CGRectZero];
+    [self.view addSubview:self.graph];
 
-    NSArray *segments = [NSArray arrayWithObjects:@"Flat", @"Bass", @"Rock", @"Pop", @"Vocal", @"Treble", nil];
-    self.presetControl = [[UISegmentedControl alloc] initWithItems:segments];
-    self.presetControl.segmentedControlStyle = UISegmentedControlStyleBar;
-    [self.presetControl addTarget:self action:@selector(presetChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.scrollView addSubview:self.presetControl];
+    self.presetButton = [UIButton buttonWithType:UIButtonTypeRoundedRect];
+    self.presetButton.titleLabel.font = [UIFont boldSystemFontOfSize:15.0];
+    [self.presetButton addTarget:self action:@selector(showPresets) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.presetButton];
 
-    for (NSUInteger band = 0; band < 5; band++) {
-        UILabel *name = [[UILabel alloc] initWithFrame:CGRectZero];
-        name.backgroundColor = [UIColor clearColor];
-        name.font = [UIFont boldSystemFontOfSize:16.0];
-        name.text = waEQBandName(band);
-        name.tag = 100 + (NSInteger)band;
-        [self.scrollView addSubview:name];
-
+    for (NSUInteger band = 0; band < WA_EQ_BANDS; band++) {
         UILabel *value = [[UILabel alloc] initWithFrame:CGRectZero];
         value.backgroundColor = [UIColor clearColor];
-        value.font = [UIFont systemFontOfSize:13.0];
+        value.font = [UIFont systemFontOfSize:9.0];
         value.textColor = [UIColor grayColor];
-        value.textAlignment = UITextAlignmentRight;
+        value.textAlignment = UITextAlignmentCenter;
+        value.adjustsFontSizeToFitWidth = YES;
         [self.valueLabels addObject:value];
-        [self.scrollView addSubview:value];
+        [self.view addSubview:value];
 
-        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectZero];
-        slider.minimumValue = -12.0f;
-        slider.maximumValue = 12.0f;
+        UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(0.0, 0.0, 23.0, 150.0)];
+        slider.minimumValue = WA_EQ_MIN;
+        slider.maximumValue = WA_EQ_MAX;
         slider.tag = (NSInteger)band;
-        slider.value = [[waPlayer shared] gainForBand:band];
+        slider.transform = CGAffineTransformMakeRotation((CGFloat)(-M_PI_2));
         [slider addTarget:self action:@selector(bandChanged:) forControlEvents:UIControlEventValueChanged];
+        [slider addTarget:self action:@selector(bandSettled:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
         [self.sliders addObject:slider];
-        [self.scrollView addSubview:slider];
+        [self.view addSubview:slider];
+
+        UILabel *name = [[UILabel alloc] initWithFrame:CGRectZero];
+        name.backgroundColor = [UIColor clearColor];
+        name.font = [UIFont boldSystemFontOfSize:10.0];
+        name.textAlignment = UITextAlignmentCenter;
+        name.text = waEQBandLabel(band);
+        name.tag = 100 + (NSInteger)band;
+        [self.view addSubview:name];
     }
-    [self syncPreset];
-    [self syncValues];
+    [self readGains];
+    [self syncPresetButton];
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    CGFloat w = CGRectGetWidth(self.view.bounds);
-    self.presetControl.frame = CGRectMake(10.0, 10.0, w - 20.0, 30.0);
-    CGFloat y = 52.0;
-    for (NSUInteger band = 0; band < 5; band++) {
-        UILabel *name = (UILabel *)[self.scrollView viewWithTag:100 + (NSInteger)band];
+    CGFloat width = CGRectGetWidth(self.view.bounds);
+    CGFloat height = CGRectGetHeight(self.view.bounds);
+    self.graph.frame = CGRectMake(8.0, 8.0, width - 16.0, 96.0);
+    self.presetButton.frame = CGRectMake(8.0, 112.0, width - 16.0, 32.0);
+
+    CGFloat top = 156.0;
+    CGFloat bottom = height - [[waRootController shared] miniPlayerHeight] - 8.0;
+    CGFloat slot = width / (CGFloat)WA_EQ_BANDS;
+    CGFloat track = bottom - top - 34.0;
+    for (NSUInteger band = 0; band < WA_EQ_BANDS; band++) {
+        CGFloat center = slot * ((CGFloat)band + 0.5);
         UILabel *value = [self.valueLabels objectAtIndex:band];
         UISlider *slider = [self.sliders objectAtIndex:band];
-        name.frame = CGRectMake(12.0, y, 90.0, 22.0);
-        value.frame = CGRectMake(w - 80.0, y, 68.0, 22.0);
-        y += 24.0;
-        // Horizontal slider row: speaker glyph space left/right is not needed here.
-        slider.frame = CGRectMake(12.0, y, w - 24.0, 23.0);
-        y += 34.0;
+        UILabel *name = (UILabel *)[self.view viewWithTag:100 + (NSInteger)band];
+        value.frame = CGRectMake(center - slot / 2.0, top, slot, 12.0);
+        slider.bounds = CGRectMake(0.0, 0.0, track, 23.0);
+        slider.center = CGPointMake(center, top + 16.0 + track / 2.0);
+        name.frame = CGRectMake(center - slot / 2.0, bottom - 16.0, slot, 14.0);
     }
-    self.scrollView.contentSize = CGSizeMake(w, y + 10.0);
 }
 
-- (void)syncPreset {
-    NSString *current = [[waPlayer shared] equalizerPresetName];
-    NSUInteger index = [self.presetNames indexOfObject:current];
-    if (index == NSNotFound) index = 0;
-    self.presetControl.selectedSegmentIndex = (NSInteger)index;
-}
-
-- (void)syncValues {
-    for (NSUInteger band = 0; band < 5; band++) {
+- (void)readGains {
+    float gains[WA_EQ_BANDS];
+    for (NSUInteger band = 0; band < WA_EQ_BANDS; band++) {
         float gain = [[waPlayer shared] gainForBand:band];
+        gains[band] = gain;
         UISlider *slider = [self.sliders objectAtIndex:band];
         slider.value = gain;
         UILabel *value = [self.valueLabels objectAtIndex:band];
-        value.text = [NSString stringWithFormat:@"%+.0f dB", gain];
+        value.text = [NSString stringWithFormat:@"%+.0f", gain];
     }
+    [self.graph setGains:gains];
 }
 
-- (void)presetChanged:(UISegmentedControl *)control {
-    if (control.selectedSegmentIndex < 0 || control.selectedSegmentIndex >= (NSInteger)self.presetNames.count) return;
-    [[waPlayer shared] applyPresetNamed:[self.presetNames objectAtIndex:(NSUInteger)control.selectedSegmentIndex]];
-    [self syncValues];
+- (void)syncPresetButton {
+    NSString *name = [[waPlayer shared] equalizerPresetName];
+    [self.presetButton setTitle:name.length ? name : @"Flat" forState:UIControlStateNormal];
+}
+
+- (void)showPresets {
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Preset" delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    for (NSString *name in self.presetNames) [sheet addButtonWithTitle:name];
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:@"Cancel"];
+    [sheet showInView:self.view];
+}
+
+- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
+    (void)actionSheet;
+    if (buttonIndex < 0 || buttonIndex >= (NSInteger)self.presetNames.count) return;
+    [[waPlayer shared] applyPresetNamed:[self.presetNames objectAtIndex:(NSUInteger)buttonIndex]];
+    [self readGains];
+    [self syncPresetButton];
 }
 
 - (void)bandChanged:(UISlider *)slider {
-    [[waPlayer shared] setGain:slider.value forBand:(NSUInteger)slider.tag];
-    UILabel *value = [self.valueLabels objectAtIndex:(NSUInteger)slider.tag];
-    value.text = [NSString stringWithFormat:@"%+.0f dB", slider.value];
+    NSUInteger band = (NSUInteger)slider.tag;
+    float snapped = roundf(slider.value);
+    UILabel *value = [self.valueLabels objectAtIndex:band];
+    value.text = [NSString stringWithFormat:@"%+.0f", snapped];
+    float gains[WA_EQ_BANDS];
+    for (NSUInteger i = 0; i < WA_EQ_BANDS; i++) {
+        UISlider *bandSlider = [self.sliders objectAtIndex:i];
+        gains[i] = roundf(bandSlider.value);
+    }
+    [self.graph setGains:gains];
+}
+
+// The audio path and the defaults are touched once the finger lifts. Driving
+// them on every pixel of the drag would rewrite the filter coefficients and
+// the plist dozens of times a second.
+- (void)bandSettled:(UISlider *)slider {
+    NSUInteger band = (NSUInteger)slider.tag;
+    float snapped = roundf(slider.value);
+    slider.value = snapped;
+    [[waPlayer shared] setGain:snapped forBand:band];
+    [self syncPresetButton];
 }
 
 - (void)reset {
     [[waPlayer shared] applyPresetNamed:@"Flat"];
-    [self syncPreset];
-    [self syncValues];
+    [self readGains];
+    [self syncPresetButton];
 }
 
 @end

@@ -1,6 +1,19 @@
 #import <Foundation/Foundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 
+// Octave bands, 31 Hz to 16 kHz. setGains: reads exactly this many floats.
+#define WA_EQ_BANDS 10
+
+// One band of the graphic EQ, without filter memory. Band 0 is a low shelf,
+// band 9 a high shelf, the rest peaking. waEQBuild returns the linear
+// pre-gain that holds the combined peak at -1 dBFS.
+typedef struct {
+    float b0, b1, b2, a1, a2;
+} waEQCoeff;
+
+float waEQBuild(const float *gains, float sampleRate, waEQCoeff coeffs[WA_EQ_BANDS]);
+float waEQMagnitudeDB(const waEQCoeff *coeffs, float sampleRate, float frequency);
+
 @class waAudioCore;
 
 @protocol waAudioCoreDelegate <NSObject>

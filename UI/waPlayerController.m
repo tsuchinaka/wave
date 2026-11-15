@@ -3,11 +3,13 @@
 #import "waQueueController.h"
 #import "waRootController.h"
 #import "waPlayer.h"
+#import "waCast.h"
 #import "waSession.h"
 #import "waLastFM.h"
 #import "waSkin.h"
 #import "waLyricStage.h"
 #import "waLyrics.h"
+#import "waLog.h"
 
 #import <QuartzCore/QuartzCore.h>
 #import <MediaPlayer/MediaPlayer.h>
@@ -96,6 +98,8 @@ enum {
 @property (nonatomic, assign) BOOL volumeDragging;
 @property (nonatomic, strong) UIBarButtonItem *likeItem;
 @property (nonatomic, strong) UIBarButtonItem *queueItem;
+@property (nonatomic, strong) UIBarButtonItem *castItem;
+@property (nonatomic, strong) MPVolumeView *airPlayView;
 @property (nonatomic, strong) UIBarButtonItem *lastFMItem;
 @property (nonatomic, strong) UIButton *lastFMButton;
 @property (nonatomic, strong) NSTimer *timer;
@@ -224,6 +228,9 @@ enum {
     MPMusicPlayerController *systemVolume = [MPMusicPlayerController iPodMusicPlayer];
     [systemVolume beginGeneratingPlaybackNotifications];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(systemVolumeChanged:) name:MPMusicPlayerControllerVolumeDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(castChanged) name:waCastDevicesDidChangeNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(castChanged) name:waCastStatusDidChangeNotification object:nil];
+    [[waCast shared] startDiscovery];
     [self syncSystemVolume];
 
     UIColor *barButtonTint = [UIColor colorWithWhite:0.18 alpha:1.0];
@@ -231,7 +238,14 @@ enum {
     self.likeItem.tintColor = barButtonTint;
     self.queueItem = [[UIBarButtonItem alloc] initWithImage:[self listGlyph] style:UIBarButtonItemStyleBordered target:self action:@selector(showQueue)];
     self.queueItem.tintColor = barButtonTint;
-    self.navigationItem.leftBarButtonItems = [NSArray arrayWithObjects:self.likeItem, self.queueItem, nil];
+    self.castItem = [[UIBarButtonItem alloc] initWithImage:[self castBarImageActive:NO] style:UIBarButtonItemStyleBordered target:self action:@selector(showCast)];
+    self.castItem.tintColor = barButtonTint;
+    self.navigationItem.leftBarButtonItems = [NSArray arrayWithObjects:self.likeItem, self.queueItem, self.castItem, nil];
+    self.airPlayView = [[MPVolumeView alloc] initWithFrame:CGRectMake(-120.0, -120.0, 40.0, 40.0)];
+    self.airPlayView.showsVolumeSlider = NO;
+    self.airPlayView.showsRouteButton = YES;
+    self.airPlayView.alpha = 0.02f;
+    [self.view addSubview:self.airPlayView];
     UIBarButtonItem *done = [[UIBarButtonItem alloc] initWithTitle:@"Done" style:UIBarButtonItemStyleBordered target:self action:@selector(close)];
     done.tintColor = barButtonTint;
     self.lastFMButton = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -250,6 +264,7 @@ enum {
     [center addObserver:self selector:@selector(lastFMChanged:) name:waLastFMDidChangeNotification object:nil];
     [self refreshTrack];
     [self refreshProgress];
+    [self castChanged];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -416,6 +431,72 @@ enum {
 
 - (void)applyLikeState:(BOOL)liked {
     self.likeItem.tintColor = liked ? [UIColor redColor] : [UIColor colorWithWhite:0.18 alpha:1.0];
+}
+
+- (UIImage *)castBarImageActive:(BOOL)active {
+    UIImage *source = [UIImage imageNamed:active ? @"WaveAirPlayOn" : @"WaveAirPlayOff"];
+    CGSize size = CGSizeMake(22.0, 16.0);
+    UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (source.CGImage) {
+        CGContextTranslateCTM(ctx, 0.0, size.height);
+        CGContextScaleCTM(ctx, 1.0, -1.0);
+        CGRect box = CGRectMake(0.0, 0.0, size.width, size.height);
+        CGFloat srcW = source.size.width;
+        CGFloat srcH = source.size.height;
+        if (srcW > 0.0 && srcH > 0.0) {
+            CGFloat scale = MIN(size.width / srcW, size.height / srcH);
+            CGFloat w = srcW * scale;
+            CGFloat h = srcH * scale;
+            box = CGRectMake((size.width - w) * 0.5, (size.height - h) * 0.5, w, h);
+        }
+        CGContextClipToMask(ctx, box, source.CGImage);
+        [[UIColor whiteColor] setFill];
+        CGContextFillRect(ctx, CGRectMake(0.0, 0.0, size.width, size.height));
+    } else {
+        [[UIColor whiteColor] setStroke];
+        [[UIColor whiteColor] setFill];
+        CGContextSetLineWidth(ctx, 1.4);
+        CGContextSetLineCap(ctx, kCGLineCapRound);
+        CGFloat cx = 11.0;
+        CGFloat cy = 9.5;
+        for (NSInteger i = 1; i <= 3; i++) {
+            CGFloat r = 2.0 * (CGFloat)i;
+            CGContextAddArc(ctx, cx, cy, r, 3.5, 5.9, 0);
+            CGContextStrokePath(ctx);
+        }
+        CGContextMoveToPoint(ctx, cx, 15.5);
+        CGContextAddLineToPoint(ctx, cx - 4.0, 10.4);
+        CGContextAddLineToPoint(ctx, cx + 4.0, 10.4);
+        CGContextClosePath(ctx);
+        CGContextFillPath(ctx);
+    }
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return image;
+}
+
+- (UIButton *)airPlayRouteButtonInView:(UIView *)view {
+    if ([view isKindOfClass:[UIButton class]]) return (UIButton *)view;
+    for (UIView *child in view.subviews) {
+        UIButton *found = [self airPlayRouteButtonInView:child];
+        if (found) return found;
+    }
+    return nil;
+}
+
+- (void)showAirPlayPicker {
+    UIButton *button = [self airPlayRouteButtonInView:self.airPlayView];
+    if (button) {
+        [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+        return;
+    }
+    for (UIView *child in self.airPlayView.subviews) {
+        if ([child isKindOfClass:[UIControl class]]) {
+            [(UIControl *)child sendActionsForControlEvents:UIControlEventTouchUpInside];
+            return;
+        }
+    }
 }
 
 - (UIImage *)listGlyph {
@@ -719,12 +800,64 @@ enum {
 
 #pragma mark - refresh
 
+- (void)castChanged {
+    waCast *cast = [waCast shared];
+    BOOL on = cast.target.name.length || cast.airPlayActive;
+    self.castItem.image = [self castBarImageActive:on];
+    self.castItem.style = on ? UIBarButtonItemStyleDone : UIBarButtonItemStyleBordered;
+    [self refreshTrack];
+    [self refreshProgress];
+    [self syncSystemVolume];
+}
+
+- (NSString *)castRow:(NSString *)label current:(BOOL)current {
+    if (!label.length) label = @"Unknown";
+    return current ? [NSString stringWithFormat:@"✓ %@", label] : label;
+}
+
+- (void)showCast {
+    waCast *cast = [waCast shared];
+    [cast startDiscovery];
+    BOOL chromecast = cast.target.name.length > 0;
+    BOOL airplay = !chromecast && cast.airPlayActive;
+    BOOL phone = !chromecast && !airplay;
+    NSString *title = @"This iPhone";
+    if (chromecast) title = cast.target.name;
+    else if (airplay) {
+        NSString *airName = cast.airPlayName;
+        title = (airName.length && ![airName isEqualToString:@"AirPlay"]) ? airName : @"AirPlay";
+    }
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:title delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
+    [sheet addButtonWithTitle:[self castRow:@"This iPhone" current:phone]];
+    NSString *air = @"AirPlay";
+    if (cast.airPlayActive) {
+        NSString *name = cast.airPlayName;
+        if (name.length && ![name isEqualToString:@"AirPlay"]) air = [NSString stringWithFormat:@"AirPlay (%@)", name];
+    }
+    [sheet addButtonWithTitle:[self castRow:air current:airplay]];
+    for (waCastDevice *device in cast.devices) {
+        NSString *label = device.model.length ? [NSString stringWithFormat:@"%@ (%@)", device.name, device.model] : device.name;
+        BOOL here = chromecast && [device.host isEqualToString:cast.target.host];
+        [sheet addButtonWithTitle:[self castRow:label current:here]];
+    }
+    if (!cast.devices.count) [sheet addButtonWithTitle:@"Searching…"];
+    sheet.cancelButtonIndex = [sheet addButtonWithTitle:@"Cancel"];
+    sheet.tag = 7;
+    [sheet showInView:self.view];
+}
+
 - (void)refreshTrack {
     waPlayer *player = [waPlayer shared];
     waTrack *track = player.currentTrack;
     self.titleLabel.text = track.title.length ? track.title : @"Not Playing";
     self.artistLabel.text = track.artistName ?: @"";
-    self.albumLabel.text = track.albumTitle ?: @"";
+    waCast *cast = [waCast shared];
+    if (cast.target.name.length) self.albumLabel.text = [NSString stringWithFormat:@"Casting to %@", cast.target.name];
+    else if (cast.airPlayActive) {
+        NSString *airName = cast.airPlayName;
+        self.albumLabel.text = (airName.length && ![airName isEqualToString:@"AirPlay"]) ? [NSString stringWithFormat:@"AirPlay: %@", airName] : @"AirPlay";
+    }
+    else self.albumLabel.text = track.albumTitle ?: @"";
     BOOL hasTrack = track != nil;
     self.playButton.enabled = hasTrack;
     self.previousButton.enabled = hasTrack;
@@ -733,13 +866,7 @@ enum {
     self.likeItem.enabled = hasTrack;
     [self applyLikeState:track.liked];
 
-    NSString *playName = player.playing ? @"SystemMediaControl-Pause" : @"SystemMediaControl-Play";
-    [self.playButton setImage:[self whiteImageNamed:playName] forState:UIControlStateNormal];
-    [self.shuffleButton setImage:[UIImage imageNamed:player.shuffleEnabled ? @"WaveShuffleOn" : @"WaveShuffleOff"] forState:UIControlStateNormal];
-    NSString *repeatName = @"WaveRepeatOff";
-    if (player.repeatMode == waRepeatAll) repeatName = @"WaveRepeatOn";
-    else if (player.repeatMode == waRepeatOne) repeatName = @"WaveRepeatOne";
-    [self.repeatButton setImage:[UIImage imageNamed:repeatName] forState:UIControlStateNormal];
+    [self refreshTransport];
 
     NSString *localArt = [[waSession shared] localArtworkPathForTrack:track];
     NSString *art = localArt.length ? localArt : ([track artworkURLForSide:320.0] ?: [waPlayer shared].contextArtworkURL);
@@ -796,7 +923,6 @@ enum {
         self.scrubber.maximumValue = 1.0;
         self.scrubber.value = 0.0;
     }
-    if (self.showingLyrics) [self.lyricStage setTime:player.outputTime];
 }
 
 - (void)tick:(NSTimer *)timer {
@@ -807,12 +933,20 @@ enum {
 
 - (void)trackChanged:(NSNotification *)note {
     (void)note;
-    [self performSelectorOnMainThread:@selector(refreshTrack) withObject:nil waitUntilDone:NO];
+    if (![NSThread isMainThread]) {
+        [self performSelectorOnMainThread:@selector(trackChanged:) withObject:note waitUntilDone:NO];
+        return;
+    }
+    [self refreshTrack];
 }
 
 - (void)stateChanged:(NSNotification *)note {
     (void)note;
-    [self performSelectorOnMainThread:@selector(refreshTrack) withObject:nil waitUntilDone:NO];
+    if (![NSThread isMainThread]) {
+        [self performSelectorOnMainThread:@selector(refreshTransport) withObject:nil waitUntilDone:NO];
+        return;
+    }
+    [self refreshTransport];
 }
 
 - (void)progressChanged:(NSNotification *)note {
@@ -841,47 +975,110 @@ enum {
     if (self.showingLyrics) [self syncLyricsToCurrentTrack];
 }
 
+- (NSString *)lyricsKeyForTrack:(waTrack *)track {
+    if (!track) return nil;
+    NSString *key = [track.identifier isKindOfClass:[NSString class]] ? track.identifier : [track.identifier description];
+    if (key.length && ![key isEqualToString:@"(null)"]) return key;
+    if (track.title.length || track.artistName.length) {
+        return [NSString stringWithFormat:@"%@|%@", track.artistName ?: @"", track.title ?: @""];
+    }
+    return nil;
+}
+
+- (waLyrics *)placeholderLyrics {
+    waLyrics *lyrics = [[waLyrics alloc] init];
+    lyrics.plain = @"Lyrics not available.";
+    lyrics.lines = [NSArray array];
+    return lyrics;
+}
+
+- (void)refreshTransport {
+    waPlayer *player = [waPlayer shared];
+    BOOL hasTrack = player.currentTrack != nil;
+    self.playButton.enabled = hasTrack;
+    self.previousButton.enabled = hasTrack;
+    self.nextButton.enabled = hasTrack;
+    NSString *playName = player.playing ? @"SystemMediaControl-Pause" : @"SystemMediaControl-Play";
+    [self.playButton setImage:[self whiteImageNamed:playName] forState:UIControlStateNormal];
+    [self.shuffleButton setImage:[UIImage imageNamed:player.shuffleEnabled ? @"WaveShuffleOn" : @"WaveShuffleOff"] forState:UIControlStateNormal];
+    NSString *repeatName = @"WaveRepeatOff";
+    if (player.repeatMode == waRepeatAll) repeatName = @"WaveRepeatOn";
+    else if (player.repeatMode == waRepeatOne) repeatName = @"WaveRepeatOne";
+    [self.repeatButton setImage:[UIImage imageNamed:repeatName] forState:UIControlStateNormal];
+}
+
 - (void)syncLyricsToCurrentTrack {
     if (!self.showingLyrics) return;
     waTrack *track = [waPlayer shared].currentTrack;
-    if (!track) {
+    NSString *key = [self lyricsKeyForTrack:track];
+    if (!key.length) {
+        [self.lyricsSpinner stopAnimating];
         self.lyricsTrackID = nil;
-        self.parsedLyrics = nil;
-        self.lyricStage.lyrics = nil;
+        self.parsedLyrics = [self placeholderLyrics];
+        self.lyricStage.loading = NO;
+        self.lyricStage.lyrics = self.parsedLyrics;
         return;
     }
-    if ([self.lyricsTrackID isEqualToString:track.identifier] && self.parsedLyrics) {
-        [self.lyricStage setTime:[waPlayer shared].outputTime];
-        return;
+    if ([self.lyricsTrackID isEqualToString:key]) {
+        if (self.lyricStage.loading) return;
+        if (self.parsedLyrics) {
+            [self.lyricStage setTime:[waPlayer shared].outputTime];
+            return;
+        }
     }
     [self loadLyricsForTrack:track];
 }
 
+- (void)applyLyricsResult:(waLyrics *)lyrics error:(NSError *)error {
+    waLyrics *ready = lyrics;
+    @try {
+        if (ready.instrumental) [ready markInstrumental];
+        else if (error || !ready || (!ready.lines.count && !ready.plain.length)) ready = [self placeholderLyrics];
+    } @catch (NSException *exception) {
+        ready = [self placeholderLyrics];
+    }
+    if (!ready) ready = [self placeholderLyrics];
+    self.parsedLyrics = ready;
+    self.lyricStage.loading = NO;
+    [self.lyricsSpinner stopAnimating];
+    @try { self.lyricStage.lyrics = ready; }
+    @catch (NSException *exception) { self.lyricStage.lyrics = [self placeholderLyrics]; }
+    if (self.showingLyrics) {
+        @try { [self.lyricStage setTime:[waPlayer shared].outputTime]; }
+        @catch (NSException *exception) { (void)exception; }
+    }
+}
+
 - (void)loadLyricsForTrack:(waTrack *)track {
+    if (!track) {
+        [self applyLyricsResult:[self placeholderLyrics] error:nil];
+        return;
+    }
     NSUInteger request = ++self.lyricsRequest;
-    self.lyricsTrackID = track.identifier;
-    self.parsedLyrics = nil;
-    self.lyricStage.loading = YES;
-    self.lyricStage.lyrics = nil;
-    [self.lyricsSpinner startAnimating];
+    self.lyricsTrackID = [self lyricsKeyForTrack:track];
+    __block BOOL immediate = NO;
     __weak waPlayerController *weakSelf = self;
     [[waSession shared] lyricsForTrack:track completion:^(waLyrics *lyrics, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
+        void (^apply)(void) = ^{
             waPlayerController *strongSelf = weakSelf;
             if (!strongSelf || strongSelf.lyricsRequest != request) return;
-            [strongSelf.lyricsSpinner stopAnimating];
-            strongSelf.lyricStage.loading = NO;
-            waLyrics *ready = lyrics;
-            if (ready.instrumental) [ready markInstrumental];
-            else if (error || !ready) {
-                ready = [[waLyrics alloc] init];
-                ready.plain = @"Lyrics not available.";
-            }
-            strongSelf.parsedLyrics = ready;
-            strongSelf.lyricStage.lyrics = ready;
-            if (strongSelf.showingLyrics) [strongSelf.lyricStage setTime:[waPlayer shared].outputTime];
-        });
+            [strongSelf applyLyricsResult:lyrics error:error];
+        };
+        if ([NSThread isMainThread]) {
+            immediate = YES;
+            apply();
+        } else {
+            dispatch_async(dispatch_get_main_queue(), apply);
+        }
     }];
+    if (!immediate) {
+        self.lyricStage.loading = NO;
+        waLyrics *wait = [[waLyrics alloc] init];
+        wait.plain = @"Loading…";
+        wait.lines = [NSArray array];
+        self.lyricStage.lyrics = wait;
+        [self.lyricsSpinner stopAnimating];
+    }
 }
 
 #pragma mark - actions
@@ -915,6 +1112,10 @@ enum {
 
 - (void)syncSystemVolume {
     if (self.volumeDragging || !self.volumeSlider) return;
+    if ([waCast shared].target) {
+        self.volumeSlider.value = [waCast shared].volume;
+        return;
+    }
     self.volumeSlider.value = [MPMusicPlayerController iPodMusicPlayer].volume;
 }
 
@@ -923,6 +1124,10 @@ enum {
 }
 
 - (void)volumeChanged:(UISlider *)slider {
+    if ([waCast shared].target) {
+        [[waCast shared] setVolume:slider.value];
+        return;
+    }
     [MPMusicPlayerController iPodMusicPlayer].volume = slider.value;
 }
 
@@ -1046,6 +1251,34 @@ enum {
 
 - (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
     if (buttonIndex == actionSheet.cancelButtonIndex) return;
+    if (actionSheet.tag == 7) {
+        waPlayer *player = [waPlayer shared];
+        waCast *cast = [waCast shared];
+        if (buttonIndex == 0) {
+            if (!cast.target) return;
+            [cast clearTarget];
+            [self castChanged];
+            if (player.currentTrack) [player refreshOutput];
+            return;
+        }
+        if (buttonIndex == 1) {
+            BOOL wasCasting = cast.target != nil;
+            if (wasCasting) [cast clearTarget];
+            [self castChanged];
+            if (wasCasting && player.currentTrack) [player refreshOutput];
+            [self showAirPlayPicker];
+            return;
+        }
+        NSArray *devices = cast.devices;
+        NSInteger index = buttonIndex - 2;
+        if (index < 0 || index >= (NSInteger)devices.count) return;
+        waCastDevice *device = [devices objectAtIndex:(NSUInteger)index];
+        if ([device.host isEqualToString:cast.target.host]) return;
+        [cast selectDevice:device];
+        [self castChanged];
+        if (player.currentTrack) [player refreshOutput];
+        return;
+    }
     if (actionSheet.tag == waPlayerSheetLastFM) {
         waLastFM *fm = [waLastFM shared];
         if (buttonIndex == actionSheet.destructiveButtonIndex) [fm logout];

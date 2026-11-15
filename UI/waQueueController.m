@@ -4,6 +4,7 @@
 
 @interface waQueueController ()
 @property (nonatomic, strong) NSArray *tracks;
+@property (nonatomic, strong) UIBarButtonItem *geniusButton;
 @end
 
 @implementation waQueueController
@@ -26,8 +27,9 @@
     self.tableView.rowHeight = 44.0;
     self.navigationItem.rightBarButtonItem = self.editButtonItem;
     UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:NULL];
+    self.geniusButton = [[UIBarButtonItem alloc] initWithTitle:@"Genius" style:UIBarButtonItemStyleBordered target:self action:@selector(toggleGenius)];
     UIBarButtonItem *clear = [[UIBarButtonItem alloc] initWithTitle:@"Clear Queue" style:UIBarButtonItemStyleBordered target:self action:@selector(confirmClear)];
-    self.toolbarItems = [NSArray arrayWithObjects:flex, clear, flex, nil];
+    self.toolbarItems = [NSArray arrayWithObjects:self.geniusButton, flex, clear, flex, nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(queueDidChange:) name:waPlayerQueueDidChangeNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(trackDidChange:) name:waPlayerTrackDidChangeNotification object:nil];
     [self reloadQueue];
@@ -44,6 +46,7 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self.navigationController setToolbarHidden:NO animated:animated];
+    [self syncGeniusButton];
     [self reloadQueue];
 }
 
@@ -65,6 +68,18 @@
 - (void)reloadQueue {
     self.tracks = [waPlayer shared].queue ? [waPlayer shared].queue : [NSArray array];
     [self.tableView reloadData];
+}
+
+- (void)syncGeniusButton {
+    BOOL on = [waPlayer shared].geniusEnabled;
+    self.geniusButton.title = on ? @"Genius On" : @"Genius";
+    self.geniusButton.style = on ? UIBarButtonItemStyleDone : UIBarButtonItemStyleBordered;
+}
+
+- (void)toggleGenius {
+    waPlayer *player = [waPlayer shared];
+    player.geniusEnabled = !player.geniusEnabled;
+    [self syncGeniusButton];
 }
 
 - (void)confirmClear {
@@ -110,6 +125,7 @@
     else if (indexPath.row >= 0 && indexPath.row < (NSInteger)self.tracks.count) track = [self.tracks objectAtIndex:(NSUInteger)indexPath.row];
     if ([track isKindOfClass:[waTrack class]]) {
         [cell setTrack:track showAlbum:YES];
+        if (track.genius) cell.badgeLabel.text = @"Genius";
         if (indexPath.section == 1 && (NSUInteger)indexPath.row == [waPlayer shared].index) {
             cell.accessoryType = UITableViewCellAccessoryCheckmark;
         }

@@ -4,6 +4,7 @@
 #import "../Core/waLastFM.h"
 #import "../Core/waLog.h"
 #import "../Core/waCrash.h"
+#import "../Core/waCast.h"
 #import "waDetailController.h"
 #import "../Skin/waSkin.h"
 
@@ -26,9 +27,16 @@
 
     [application beginReceivingRemoteControlEvents];
     [waLastFM shared];
+    [waCast shared];
     [[waSession shared] restoreWithCompletion:^(BOOL ok, NSError *error) {
         (void)ok;
         if (error) [[waLog shared] log:@"restore failed %@", error.localizedDescription];
+        waCast *cast = [waCast shared];
+        if (cast.target.host.length) {
+            [cast recover];
+            waPlayer *player = [waPlayer shared];
+            if (player.currentTrack) [player refreshOutput];
+        }
     }];
     return YES;
 }
@@ -36,6 +44,11 @@
 - (void)applicationWillEnterForeground:(UIApplication *)application {
     (void)application;
     [[waRootController shared] refreshMiniPlayer];
+    waCast *cast = [waCast shared];
+    if (cast.target.host.length) {
+        [cast recover];
+        if ([waPlayer shared].currentTrack && !cast.connected) [[waPlayer shared] refreshOutput];
+    }
 }
 
 - (void)remoteControlReceivedWithEvent:(UIEvent *)event {

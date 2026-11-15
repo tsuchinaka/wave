@@ -38,6 +38,7 @@ extern NSString * const waPlayerDidFailNotification;
 
 @property (nonatomic, assign) waRepeatMode repeatMode;
 @property (nonatomic, assign) BOOL shuffleEnabled;
+@property (nonatomic, assign) BOOL geniusEnabled;
 @property (nonatomic, assign) BOOL crossfadeEnabled;
 @property (nonatomic, assign) NSTimeInterval crossfadeDuration;
 @property (nonatomic, assign) float volume;
@@ -58,8 +59,9 @@ extern NSString * const waPlayerDidFailNotification;
 - (void)moveFrom:(NSUInteger)from to:(NSUInteger)to;
 - (void)clearQueue;
 - (void)jumpToIndex:(NSUInteger)index;
+- (void)refreshOutput;
 
-// 5-band EQ, values in dB (-12..12). Presets are named, no custom UI needed.
+// 10-band octave EQ, values in dB (-12..12). Bands are 31 Hz to 16 kHz.
 - (void)setGain:(float)gain forBand:(NSUInteger)band;
 - (float)gainForBand:(NSUInteger)band;
 - (NSArray *)equalizerPresets;
