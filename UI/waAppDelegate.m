@@ -87,32 +87,6 @@
         if (index >= 0 && index < (NSInteger)root.viewControllers.count) root.selectedIndex = (NSUInteger)index;
         return YES;
     }
-    if ([[url.scheme lowercaseString] isEqualToString:@"wave"] && [[url.host lowercaseString] isEqualToString:@"shot"]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            extern CGImageRef UIGetScreenImage(void);
-            CGImageRef screen = UIGetScreenImage();
-            UIImage *image = screen ? [UIImage imageWithCGImage:screen] : nil;
-            if (screen) CGImageRelease(screen);
-            if (!image) {
-                UIWindow *window = application.keyWindow;
-                if (!window) return;
-                UIGraphicsBeginImageContextWithOptions(window.bounds.size, YES, 0.0);
-                [window.layer renderInContext:UIGraphicsGetCurrentContext()];
-                image = UIGraphicsGetImageFromCurrentImageContext();
-                UIGraphicsEndImageContext();
-            }
-            NSString *name = @"home";
-            for (NSString *pair in [url.query componentsSeparatedByString:@"&"]) {
-                if ([pair hasPrefix:@"n="]) name = [pair substringFromIndex:2];
-            }
-            if (!name.length) name = @"home";
-            NSArray *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-            NSString *path = docs.count ? [[docs objectAtIndex:0] stringByAppendingPathComponent:[NSString stringWithFormat:@"shot-%@.png", name]] : [NSString stringWithFormat:@"/tmp/shot-%@.png", name];
-            [UIImagePNGRepresentation(image) writeToFile:path atomically:YES];
-            [[waLog shared] log:@"shot %@", path];
-        });
-        return YES;
-    }
     if ([[url.scheme lowercaseString] isEqualToString:@"wave"] && [[url.host lowercaseString] isEqualToString:@"play"]) {
         NSString *raw = [url.path stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
         NSArray *parts = [raw componentsSeparatedByString:@","];
