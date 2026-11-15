@@ -1204,9 +1204,13 @@ static NSInteger waArtworkPixelWidth(NSString *path) {
     if (![self needsStorageMigration]) return;
     NSArray *items = [self.items copy];
     [[waLog shared] log:@"downloads migrate %lu", (unsigned long)items.count];
+    __weak waDownloader *weakSelf = self;
     for (waDownload *download in items) {
         if (download.state != waDownloadCompleted) continue;
-        [self tagDownload:download];
+        // Pull the 1920 cover first, so the tag carries the HD one.
+        [self fetchArtworkForDownload:download completion:^{
+            [weakSelf tagDownload:download];
+        }];
     }
 }
 
