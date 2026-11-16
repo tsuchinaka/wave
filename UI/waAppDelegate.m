@@ -141,6 +141,7 @@
         }
         return YES;
     }
+    if ([[url.scheme lowercaseString] isEqualToString:@"wave"]) return YES;
     return NO;
 }
 

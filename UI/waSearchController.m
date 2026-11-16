@@ -29,7 +29,6 @@ static UITextField *waSearchField(UIView *view) {
 
 @interface waSearchController () <UISearchBarDelegate>
 @property (nonatomic, strong) UISearchBar *searchBar;
-@property (nonatomic, strong) UIView *searchHost;
 @property (nonatomic, strong) NSArray *recents;
 @property (nonatomic, copy) NSString *activeQuery;
 @property (nonatomic, strong) NSArray *tracks;
@@ -72,10 +71,10 @@ static UITextField *waSearchField(UIView *view) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.navigationController.navigationBar.barStyle = UIBarStyleBlack;
-    self.navigationController.navigationBar.translucent = NO;
     self.tableView.backgroundColor = [UIColor groupTableViewBackgroundColor];
     [self installSearchBar];
+    // This screen is the search bar. The navigation bar would be a second one.
+    [self.navigationController setNavigationBarHidden:YES animated:NO];
     [self loadRecents];
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
     [center addObserver:self selector:@selector(keyboardFrameChanged:) name:UIKeyboardDidChangeFrameNotification object:nil];
@@ -85,17 +84,22 @@ static UITextField *waSearchField(UIView *view) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self fitSearchBar];
+    [self.navigationController setNavigationBarHidden:YES animated:animated];
+    [self layoutSearchChrome];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     if ([self.searchBar isFirstResponder]) [self.searchBar resignFirstResponder];
+    // A pushed screen needs the blue bar and the back title. A tab switch does not.
+    if (self.navigationController.topViewController != self) {
+        [self.navigationController setNavigationBarHidden:NO animated:animated];
+    }
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    [self fitSearchBar];
+    [self layoutSearchChrome];
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation {
@@ -105,13 +109,10 @@ static UITextField *waSearchField(UIView *view) {
 #pragma mark - search bar
 
 - (void)installSearchBar {
-    UIView *host = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 256.0, 44.0)];
-    host.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    host.backgroundColor = [UIColor clearColor];
-
-    UISearchBar *bar = [[UISearchBar alloc] initWithFrame:host.bounds];
+    UISearchBar *bar = [[UISearchBar alloc] initWithFrame:CGRectMake(0.0, 0.0, 320.0, 44.0)];
     bar.delegate = self;
     bar.placeholder = @"Search";
+    bar.barStyle = UIBarStyleDefault;
     bar.showsCancelButton = NO;
     bar.autocorrectionType = UITextAutocorrectionTypeNo;
     bar.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -122,41 +123,24 @@ static UITextField *waSearchField(UIView *view) {
         field.returnKeyType = UIReturnKeySearch;
         field.enablesReturnKeyAutomatically = YES;
     }
-
-    [host addSubview:bar];
+    [self.view addSubview:bar];
     self.searchBar = bar;
-    self.searchHost = host;
-    self.navigationItem.titleView = host;
 }
 
-// The bar is the title. Its width comes from what the bar still has free once
-// Cancel is up, so the field never slides under the button.
-- (void)fitSearchBar {
-    UINavigationBar *bar = self.navigationController.navigationBar;
-    if (!bar || !self.searchHost) return;
-    CGFloat width = CGRectGetWidth(bar.bounds) - 12.0;
-    if (self.navigationItem.rightBarButtonItem) width -= 70.0;
-    if (self.navigationItem.leftBarButtonItem) width -= 70.0;
-    if (width < 140.0) width = 140.0;
-    if (fabs(CGRectGetWidth(self.searchHost.frame) - width) < 0.5) return;
-    self.searchHost.frame = CGRectMake(0.0, 0.0, width, 44.0);
+// The padded root lays the table out under the status bar. The search bar
+// takes that top strip, full width, and the table starts below it.
+- (void)layoutSearchChrome {
+    if (!self.searchBar || !self.isViewLoaded) return;
+    CGFloat width = CGRectGetWidth(self.view.bounds);
+    if (width < 1.0) width = 320.0;
     self.searchBar.frame = CGRectMake(0.0, 0.0, width, 44.0);
-    // Resizing in place keeps the field first responder. Reassigning
-    // titleView is what dismisses the keyboard on iOS 5.
-    [bar setNeedsLayout];
-}
-
-- (void)setCancelVisible:(BOOL)visible {
-    if (visible) {
-        if (!self.navigationItem.rightBarButtonItem) {
-            self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
-                                                                                                    target:self
-                                                                                                    action:@selector(cancelSearch)];
-        }
-    } else if (self.navigationItem.rightBarButtonItem) {
-        self.navigationItem.rightBarButtonItem = nil;
-    }
-    [self fitSearchBar];
+    UIView *wrap = [self.view viewWithTag:9043];
+    if (!wrap) return;
+    CGFloat pad = [waRootController miniPlayerCoverHeight];
+    CGFloat height = CGRectGetHeight(self.view.bounds) - 44.0 - pad;
+    if (height < 1.0) height = 1.0;
+    wrap.frame = CGRectMake(0.0, 44.0, width, height);
+    [self.view bringSubviewToFront:self.searchBar];
 }
 
 #pragma mark - recents
@@ -240,9 +224,13 @@ static UITextField *waSearchField(UIView *view) {
 }
 
 - (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
-    (void)searchBar;
-    [self setCancelVisible:YES];
+    [searchBar setShowsCancelButton:YES animated:YES];
     if (self.screen == waSearchScreenIdle && [self typedQuery].length) [self scheduleSuggest];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    (void)searchBar;
+    [self cancelSearch];
 }
 
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
@@ -267,8 +255,8 @@ static UITextField *waSearchField(UIView *view) {
     self.suggestGeneration++;
     self.searchGeneration++;
     self.searchBar.text = @"";
+    [self.searchBar setShowsCancelButton:NO animated:YES];
     [self.searchBar resignFirstResponder];
-    [self setCancelVisible:NO];
     [self presentIdle];
 }
 
@@ -309,8 +297,8 @@ static UITextField *waSearchField(UIView *view) {
 - (void)submitSearch {
     NSString *query = [self typedQuery];
     if (!query.length) return;
+    [self.searchBar setShowsCancelButton:NO animated:YES];
     [self.searchBar resignFirstResponder];
-    [self setCancelVisible:NO];
     [self rememberQuery:query];
     [self runSearch:query];
 }
@@ -438,45 +426,35 @@ static UITextField *waSearchField(UIView *view) {
     return (NSInteger)self.groups.count;
 }
 
-// Grouped headers carry the action where it belongs: See All on a preview
-// carousel, Clear on recents. Plain sections keep the stock label look.
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     (void)tableView;
-    NSDictionary *group = [self groupAt:section];
-    NSString *title = [group objectForKey:@"title"];
-    NSString *kind = [group objectForKey:@"kind"];
-    BOOL seeAll = [kind isEqualToString:@"carousel"];
-    BOOL clear = [kind isEqualToString:@"recent"];
-    if (!title.length && !seeAll && !clear) return nil;
-    UIView *view = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, CGRectGetWidth(self.tableView.bounds), 32.0)];
-    view.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    view.backgroundColor = [UIColor clearColor];
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(16.0, 6.0, CGRectGetWidth(view.bounds) - 110.0, 22.0)];
-    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    label.backgroundColor = [UIColor clearColor];
-    label.font = [UIFont boldSystemFontOfSize:16.0];
-    label.textColor = [UIColor colorWithWhite:0.30 alpha:1.0];
-    label.text = title;
-    [view addSubview:label];
-    if (seeAll || clear) {
-        UIButton *button = [UIButton buttonWithType:UIButtonTypeRoundedRect];
-        button.frame = CGRectMake(CGRectGetWidth(view.bounds) - 84.0, 3.0, 72.0, 26.0);
-        button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        button.titleLabel.font = [UIFont systemFontOfSize:12.0];
-        button.tag = section;
-        [button setTitle:seeAll ? @"See All" : @"Clear" forState:UIControlStateNormal];
-        [button addTarget:self action:seeAll ? @selector(seeAll:) : @selector(clearRecents) forControlEvents:UIControlEventTouchUpInside];
-        [view addSubview:button];
-    }
-    return view;
+    NSString *title = [[self groupAt:section] objectForKey:@"title"];
+    return title.length ? title : nil;
 }
 
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
     (void)tableView;
-    NSDictionary *group = [self groupAt:section];
-    NSString *kind = [group objectForKey:@"kind"];
-    if ([kind isEqualToString:@"carousel"] || [kind isEqualToString:@"recent"]) return 32.0;
-    return [[[group objectForKey:@"title"] description] length] ? 32.0 : 0.0;
+    return [self footerForSection:section] ? 52.0 : 0.0;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
+    (void)tableView;
+    if (![self footerForSection:section]) return nil;
+    CGFloat width = CGRectGetWidth(self.tableView.bounds);
+    if (width < 1.0) width = 320.0;
+    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, 52.0)];
+    footer.backgroundColor = [UIColor clearColor];
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeRoundedRect];
+    button.frame = CGRectMake(10.0, 8.0, width - 20.0, 36.0);
+    button.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [button setTitle:@"Clear Recents" forState:UIControlStateNormal];
+    [button addTarget:self action:@selector(clearRecents) forControlEvents:UIControlEventTouchUpInside];
+    [footer addSubview:button];
+    return footer;
+}
+
+- (BOOL)footerForSection:(NSInteger)section {
+    return [[[self groupAt:section] objectForKey:@"kind"] isEqualToString:@"recent"] && self.recents.count > 0;
 }
 
 - (void)clearRecents {
@@ -490,8 +468,8 @@ static UITextField *waSearchField(UIView *view) {
     [self.tableView reloadData];
 }
 
-- (void)seeAll:(UIButton *)button {
-    NSDictionary *group = [self groupAt:button.tag];
+- (void)seeAllSection:(NSInteger)section {
+    NSDictionary *group = [self groupAt:section];
     NSArray *items = [group objectForKey:@"items"];
     id first = items.count ? [items objectAtIndex:0] : nil;
     waSearchKind kind = waSearchAlbums;
@@ -507,14 +485,14 @@ static UITextField *waSearchField(UIView *view) {
     NSDictionary *group = [self groupAt:section];
     NSString *kind = [group objectForKey:@"kind"];
     NSArray *items = [group objectForKey:@"items"];
-    if ([kind isEqualToString:@"carousel"]) return items.count ? 1 : 0;
+    if ([kind isEqualToString:@"carousel"]) return items.count ? 2 : 0;
     return (NSInteger)items.count;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     (void)tableView;
     NSDictionary *group = [self groupAt:indexPath.section];
-    if ([[[group objectForKey:@"kind"] description] isEqualToString:@"carousel"]) {
+    if ([[[group objectForKey:@"kind"] description] isEqualToString:@"carousel"] && indexPath.row == 0) {
         return [waCarouselView heightForArtworkSide:80.0 paged:NO showsHeader:NO] + 8.0;
     }
     return 44.0;
@@ -589,6 +567,18 @@ static UITextField *waSearchField(UIView *view) {
     NSString *kind = [group objectForKey:@"kind"];
     NSArray *items = [group objectForKey:@"items"];
     if ([kind isEqualToString:@"carousel"]) {
+        if (indexPath.row > 0) {
+            static NSString *kAll = @"search.seeall";
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kAll];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kAll];
+                cell.textLabel.font = [UIFont systemFontOfSize:17.0];
+                cell.textLabel.textColor = [UIColor colorWithRed:0.16 green:0.33 blue:0.58 alpha:1.0];
+            }
+            cell.textLabel.text = @"See All";
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return cell;
+        }
         return [self carouselCell:tableView tag:801 + indexPath.section items:items action:@selector(carouselTapped:)];
     }
     if ([kind isEqualToString:@"query"]) {
@@ -654,6 +644,10 @@ static UITextField *waSearchField(UIView *view) {
     NSDictionary *group = [self groupAt:indexPath.section];
     NSString *kind = [group objectForKey:@"kind"];
     NSArray *items = [group objectForKey:@"items"];
+    if ([kind isEqualToString:@"carousel"]) {
+        if (indexPath.row > 0) [self seeAllSection:indexPath.section];
+        return;
+    }
     if (indexPath.row < 0 || indexPath.row >= (NSInteger)items.count) return;
     if ([kind isEqualToString:@"query"] || [kind isEqualToString:@"recent"]) {
         NSString *query = [items objectAtIndex:(NSUInteger)indexPath.row];
@@ -661,13 +655,12 @@ static UITextField *waSearchField(UIView *view) {
         [self submitSearch];
         return;
     }
-    if ([kind isEqualToString:@"carousel"]) return;
     id item = [items objectAtIndex:(NSUInteger)indexPath.row];
     if (![item isKindOfClass:[waItem class]]) return;
     NSString *query = [self typedQuery];
     if (query.length) [self rememberQuery:query];
+    [self.searchBar setShowsCancelButton:NO animated:YES];
     [self.searchBar resignFirstResponder];
-    [self setCancelVisible:NO];
     [self openItem:(waItem *)item];
 }
 
