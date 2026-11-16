@@ -157,6 +157,9 @@ typedef struct {
     float *_pumpFloats;
     void *_nextPumpScratch;
     float *_nextPumpFloats;
+    float *_crossMix;
+    float _crossFromGain, _crossToGain;
+    float _crossFromStep, _crossToStep;
 }
 - (void)renderInto:(AudioQueueBufferRef)buffer;
 - (void)maybeFinish;
@@ -204,7 +207,9 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     free(_pumpFloats);
     free(_nextPumpScratch);
     free(_nextPumpFloats);
+    free(_crossMix);
 #if !OS_OBJECT_USE_OBJC
+    if (_decodeQueue) dispatch_release(_decodeQueue);
     if (_nextDecodeQueue) dispatch_release(_nextDecodeQueue);
 #endif
     pthread_mutex_destroy(&_stateLock);
@@ -221,6 +226,7 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     if (!_pumpFloats) _pumpFloats = (float *)calloc(1, WA_PUMP_FLOATS);
     if (!_nextPumpScratch) _nextPumpScratch = calloc(1, WA_PUMP_BYTES);
     if (!_nextPumpFloats) _nextPumpFloats = (float *)calloc(1, WA_PUMP_FLOATS);
+    if (!_crossMix) _crossMix = (float *)calloc(WA_QUEUE_FRAMES * 2, sizeof(float));
 }
 
 #pragma mark - public
@@ -472,6 +478,13 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     if (_overlapTotal < 512) _overlapTotal = 512;
     _overlapDone = 0;
     _overlapping = YES;
+    // Equal-power crossfade as a rotation: one sin/cos per fade, not two per
+    // sample. Each frame multiplies the pair by a fixed 2x2 step matrix.
+    float step = (float)M_PI * 0.5f / (float)_overlapTotal;
+    _crossFromGain = 1.0f;
+    _crossToGain = 0.0f;
+    _crossFromStep = cosf(step);
+    _crossToStep = sinf(step);
     // Called from the audio callback: no formatting, no allocation here.
     dispatch_async(_decodeQueue, ^{ [[waLog shared] log:@"crossfade %.2fs", duration]; });
 }
@@ -504,12 +517,12 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
         size_t written = 0;
         while (written < frames && generation == _nextPumpGeneration) {
             size_t wrote = waRingWrite(&_nextRing, floats + written * 2, frames - written);
-            if (!wrote) { [NSThread sleepForTimeInterval:0.004]; continue; }
+            if (!wrote) { [NSThread sleepForTimeInterval:0.02]; continue; }
             written += wrote;
         }
     }
     if (_nextFinished && waRingCount(&_nextRing) == 0) return;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.002 * NSEC_PER_SEC)), _nextDecodeQueue, ^{ [self pumpNext:generation]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.012 * NSEC_PER_SEC)), _nextDecodeQueue, ^{ [self pumpNext:generation]; });
 }
 
 - (void)promoteNext {
@@ -605,7 +618,7 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
         size_t written = 0;
         while (written < frames && generation == _pumpGeneration && _running) {
             size_t wrote = waRingWrite(&_ring, floats + written * 2, frames - written);
-            if (!wrote) { [NSThread sleepForTimeInterval:0.005]; continue; }
+            if (!wrote) { [NSThread sleepForTimeInterval:0.02]; continue; }
             written += wrote;
         }
     }
@@ -617,7 +630,7 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
         [self maybeFinish];
         return;
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.002 * NSEC_PER_SEC)), _decodeQueue, ^{ [self pumpStep:generation]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.012 * NSEC_PER_SEC)), _decodeQueue, ^{ [self pumpStep:generation]; });
 }
 
 - (void)convertScratch:(void *)scratch frames:(size_t)frames toFloat:(float *)out format:(AudioStreamBasicDescription)format {
@@ -702,11 +715,11 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
     if (_overlapping) [self cancelNext];
     _overlapEligible = NO;
     _seekBase = MAX(0.0, MIN(time, _duration > 0 ? _duration : time));
+    waRingClear(&_ring);
     pthread_mutex_lock(&_stateLock);
     _framesRendered = 0;
-    pthread_mutex_unlock(&_stateLock);
     _outputStampValid = NO;
-    waRingClear(&_ring);
+    pthread_mutex_unlock(&_stateLock);
     _finished = NO;
     BOOL restart = !_running;
     pthread_mutex_unlock(&_renderLock);
@@ -993,21 +1006,24 @@ static inline float waSoftCeiling(float x) {
     _framesRendered += got;
     pthread_mutex_unlock(&_stateLock);
     if (_overlapping && _nextOpened) {
-        float mix[WA_QUEUE_FRAMES * 2];
+        float *mix = _crossMix;
         size_t nextGot = waRingRead(&_nextRing, mix, frames);
         _nextFramesRendered += nextGot;
+        float from = _crossFromGain, to = _crossToGain;
+        float cs = _crossFromStep, sn = _crossToStep;
         for (size_t i = 0; i < frames; i++) {
-            float t = _overlapTotal ? (float)(_overlapDone + i) / (float)_overlapTotal : 1.0f;
-            if (t > 1.0f) t = 1.0f;
-            float outG = cosf(t * (float)M_PI * 0.5f);
-            float inG = sinf(t * (float)M_PI * 0.5f);
             float cl = i < got ? dest[i * 2] : 0.0f;
             float cr = i < got ? dest[i * 2 + 1] : 0.0f;
             float nl = i < nextGot ? mix[i * 2] : 0.0f;
             float nr = i < nextGot ? mix[i * 2 + 1] : 0.0f;
-            dest[i * 2] = cl * outG + nl * inG;
-            dest[i * 2 + 1] = cr * outG + nr * inG;
+            dest[i * 2] = cl * from + nl * to;
+            dest[i * 2 + 1] = cr * from + nr * to;
+            float nf = from * cs - to * sn;
+            to = to * cs + from * sn;
+            from = nf;
         }
+        _crossFromGain = from;
+        _crossToGain = to;
         _overlapDone += frames;
         if (_overlapDone >= _overlapTotal) [self promoteNext];
     } else if (got < frames && _finished && _nextOpened && waRingCount(&_nextRing) > 0) {
