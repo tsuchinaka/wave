@@ -17,6 +17,9 @@
 #include <fcntl.h>
 #include <string.h>
 
+static mbedtls_x509_crt waTLSSharedCA;
+static dispatch_once_t waTLSCAOnce;
+
 static NSError *waTLSError(NSInteger code, NSString *message) {
     return [NSError errorWithDomain:@"wave.tls" code:code userInfo:@{NSLocalizedDescriptionKey: message ?: @"TLS failed."}];
 }
@@ -58,9 +61,23 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
 + (NSData *)dechunk:(NSData *)data;
 + (NSData *)rootCertificate;
 + (void)loadTrustStore:(mbedtls_x509_crt *)ca;
++ (mbedtls_x509_crt *)sharedTrustStore;
 @end
 
 @implementation waTLS
+
+// Parsing four DER roots plus the DigiCert root per request is pure CPU cost.
+// The chain is immutable after setup and safe to share across the two
+// concurrent requests the API gate allows.
++ (mbedtls_x509_crt *)sharedTrustStore {
+    dispatch_once(&waTLSCAOnce, ^{
+        mbedtls_x509_crt_init(&waTLSSharedCA);
+        [self loadTrustStore:&waTLSSharedCA];
+        NSData *rootDER = [self rootCertificate];
+        if (rootDER.length) mbedtls_x509_crt_parse_der(&waTLSSharedCA, rootDER.bytes, rootDER.length);
+    });
+    return &waTLSSharedCA;
+}
 
 + (NSData *)rootCertificate {
     static NSData *der = nil;
@@ -175,15 +192,12 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
     mbedtls_ssl_config conf;
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context drbg;
-    mbedtls_x509_crt ca;
     mbedtls_ssl_init(&ssl);
     mbedtls_ssl_config_init(&conf);
     mbedtls_entropy_init(&entropy);
     mbedtls_ctr_drbg_init(&drbg);
-    mbedtls_x509_crt_init(&ca);
 
-    [self loadTrustStore:&ca];
-    if (rootDER.length) mbedtls_x509_crt_parse_der(&ca, rootDER.bytes, rootDER.length);
+    mbedtls_x509_crt *ca = [self sharedTrustStore];
     const char *personal = "wave";
     int status = mbedtls_ctr_drbg_seed(&drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)personal, strlen(personal));
     if (status != 0) {
@@ -196,7 +210,7 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
         goto cleanup;
     }
     mbedtls_ssl_conf_authmode(&conf, verify ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_NONE);
-    mbedtls_ssl_conf_ca_chain(&conf, &ca, NULL);
+    mbedtls_ssl_conf_ca_chain(&conf, ca, NULL);
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &drbg);
     mbedtls_ssl_conf_min_version(&conf, MBEDTLS_SSL_MAJOR_VERSION_3, MBEDTLS_SSL_MINOR_VERSION_3);
 
@@ -304,7 +318,6 @@ cleanup:
     mbedtls_ssl_config_free(&conf);
     mbedtls_ctr_drbg_free(&drbg);
     mbedtls_entropy_free(&entropy);
-    mbedtls_x509_crt_free(&ca);
     close(fd);
 
     if (!parsed) return nil;

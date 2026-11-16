@@ -163,7 +163,9 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
 @property (nonatomic, assign) NSUInteger writesSinceSweep;
 @end
 
-@implementation waImageCache
+@implementation waImageCache {
+    CGFloat _screenScale;
+}
 
 + (waImageCache *)shared {
     static waImageCache *cache;
@@ -207,6 +209,8 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
 
 - (id)init {
     if ((self = [super init])) {
+        _screenScale = [UIScreen mainScreen].scale;
+        if (_screenScale < 1.0) _screenScale = 1.0;
         NSUInteger net = 2, decode = 1, memory = 80;
         [self readProfileNet:&net decode:&decode memory:&memory];
 
@@ -253,9 +257,7 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
 }
 
 - (NSInteger)pixelForSize:(CGSize)size {
-    CGFloat scale = [UIScreen mainScreen].scale;
-    if (scale < 1.0) scale = 1.0;
-    NSInteger pixel = (NSInteger)(MAX(size.width, size.height) * scale + 0.5);
+    NSInteger pixel = (NSInteger)(MAX(size.width, size.height) * _screenScale + 0.5);
     if (pixel < 32) pixel = 32;
     if (pixel > self.maxPixel) pixel = self.maxPixel;
     return pixel;
@@ -409,8 +411,7 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
             }
             [group addObject:waiter];
         }
-        CGFloat scale = [UIScreen mainScreen].scale;
-        if (scale < 1.0) scale = 1.0;
+        CGFloat scale = _screenScale;
         [byPixel enumerateKeysAndObjectsUsingBlock:^(NSNumber *key, NSArray *group, BOOL *stop) {
             (void)stop;
             [strongSelf.decodeQueue addOperationWithBlock:^{

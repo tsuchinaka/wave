@@ -136,13 +136,20 @@ static BOOL waPreviewURL(NSString *url) {
 }
 
 - (void)sendURL:(NSURL *)url method:(NSString *)method headers:(NSDictionary *)headers body:(NSData *)body completion:(void (^)(NSData *, id, NSInteger, NSError *))completion {
+    // A software TLS 1.2 handshake costs tens of ms of CPU. Home used to fire
+    // 4-6 at once on a single-core A4. Cap it to two in flight.
+    static dispatch_semaphore_t gate;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ gate = dispatch_semaphore_create(2); });
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        dispatch_semaphore_wait(gate, DISPATCH_TIME_FOREVER);
         NSError *error = nil;
         NSDictionary *response = [waTLS requestURL:url method:method headers:headers body:body timeout:20.0 error:&error];
         NSData *data = response[@"body"];
         NSInteger status = [response[@"status"] integerValue];
         id json = nil;
         if (data.length) json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+        dispatch_semaphore_signal(gate);
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion) completion(data, json, status, error);
         });
