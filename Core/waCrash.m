@@ -9,6 +9,9 @@
 static NSUncaughtExceptionHandler *waPrevException = NULL;
 static struct sigaction waPrevSignals[32];
 static volatile sig_atomic_t waCrashBusy = 0;
+#define WA_CRUMB_CAP 320
+static char waCrumb[WA_CRUMB_CAP];
+static volatile sig_atomic_t waCrumbLength = 0;
 static const char * const waCrashPaths[] = {
     "/var/mobile/Documents/wave.crash",
     "/tmp/wave.crash",
@@ -38,6 +41,14 @@ static void waCrashWriteC(int fd, const char *text) {
     size_t n = 0;
     while (text[n]) n++;
     waCrashWriteRaw(fd, text, n);
+}
+
+
+static void waCrashWriteCrumb(int fd) {
+    if (waCrumbLength <= 0) return;
+    waCrashWriteC(fd, "crumb ");
+    waCrashWriteRaw(fd, waCrumb, (size_t)waCrumbLength);
+    waCrashWriteC(fd, "\n");
 }
 
 static void waCrashWriteHex(int fd, uintptr_t value) {
@@ -131,6 +142,7 @@ static void waCrashSignal(int sig, siginfo_t *info, void *context) {
         waCrashWriteC(fd, " ");
         waCrashWriteC(fd, name);
         waCrashWriteC(fd, "\n");
+        waCrashWriteCrumb(fd);
         if (info) {
             waCrashWriteC(fd, "code ");
             waCrashWriteHex(fd, (uintptr_t)info->si_code);
@@ -185,6 +197,9 @@ static void waCrashException(NSException *exception) {
     NSDictionary *info = exception.userInfo;
     if (info.count) [out appendFormat:@"info %@\n", info];
     [out appendFormat:@"thread %@\n", [NSThread currentThread]];
+    if (waCrumbLength > 0) {
+        [out appendFormat:@"crumb %.*s\n", (int)waCrumbLength, waCrumb];
+    }
     NSArray *symbols = exception.callStackSymbols;
     if (symbols.count) {
         [out appendString:@"stack\n"];
@@ -239,6 +254,19 @@ static void waCrashCatch(int sig) {
         if (text.length) return text;
     }
     return nil;
+}
+
++ (void)markScreen:(NSString *)screen action:(NSString *)action {
+    NSString *line = [NSString stringWithFormat:@"%@ | %@",
+                      screen.length ? screen : @"?",
+                      action.length ? action : @"-"];
+    const char *bytes = [line UTF8String];
+    if (!bytes) return;
+    size_t length = strlen(bytes);
+    if (length > WA_CRUMB_CAP - 1) length = WA_CRUMB_CAP - 1;
+    memcpy(waCrumb, bytes, length);
+    waCrumb[length] = 0;
+    waCrumbLength = (sig_atomic_t)length;
 }
 
 + (void)install {

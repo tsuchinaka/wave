@@ -8,6 +8,7 @@
 #import "../Skin/waSkin.h"
 #import "../Core/waSession.h"
 #import "../Core/waPlayer.h"
+#import "../Core/waCrash.h"
 #import "../Core/waDownloader.h"
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
@@ -201,12 +202,14 @@ static CGFloat waMiniPlayerCoverHeight = 0.0;
 }
 
 - (void)tabBarController:(UITabBarController *)tabBarController didSelectViewController:(UIViewController *)viewController {
-    (void)tabBarController; (void)viewController;
+    (void)tabBarController;
+    [waCrash markScreen:NSStringFromClass([viewController class]) action:@"tab"];
     [self layoutMiniBar];
 }
 
 - (void)navigationController:(UINavigationController *)navigationController didShowViewController:(UIViewController *)viewController animated:(BOOL)animated {
-    (void)navigationController; (void)viewController; (void)animated;
+    (void)navigationController; (void)animated;
+    [waCrash markScreen:NSStringFromClass([viewController class]) action:@"navigate"];
     [self layoutMiniBar];
 }
 
