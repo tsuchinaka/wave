@@ -363,10 +363,41 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
     return [self.item artworkURLForSide:self.artworkSide];
 }
 
+// Reflections are one bitmap per cover and were being drawn on the main
+// thread the moment each image landed, which is exactly when a strip scrolls
+// into view. They are built on a quiet queue once and kept per artwork.
+static NSCache *waReflectionCache(void) {
+    static NSCache *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 96;
+    });
+    return cache;
+}
+
 - (void)applyImage:(UIImage *)image {
     if (image) {
         self.artView.image = image;
-        self.reflectionView.image = waReflection(image, 16.0);
+        NSString *key = [NSString stringWithFormat:@"%@|%.0f", [self artworkURL] ?: @"", self.artworkSide];
+        UIImage *ready = [waReflectionCache() objectForKey:key];
+        if (ready) {
+            self.reflectionView.image = ready;
+            return;
+        }
+        self.reflectionView.image = nil;
+        waItem *requested = self.item;
+        __weak waCoverView *weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            UIImage *reflection = waReflection(image, 16.0);
+            if (!reflection) return;
+            [waReflectionCache() setObject:reflection forKey:key];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                waCoverView *strongSelf = weakSelf;
+                if (!strongSelf || strongSelf.item != requested) return;
+                strongSelf.reflectionView.image = reflection;
+            });
+        });
     } else {
         self.artView.image = waPaperFill();
         self.reflectionView.image = nil;
