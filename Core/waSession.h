@@ -102,5 +102,6 @@ extern NSString * const waSessionAuthDidChangeNotification;
 - (void)albumTracks:(NSString *)albumID completion:(void (^)(NSArray *tracks, NSError *error))completion;
 - (void)playlistTracks:(NSString *)playlistID completion:(void (^)(NSArray *tracks, NSError *error))completion;
 - (void)searchAll:(NSString *)query completion:(void (^)(NSArray *tracks, NSArray *albums, NSArray *artists, NSArray *playlists, NSError *error))completion;
+- (void)searchSuggest:(NSString *)query completion:(void (^)(NSArray *artists, NSArray *tracks, NSArray *albums, NSArray *playlists, NSError *error))completion;
 - (void)commentsForPath:(NSString *)path completion:(void (^)(NSArray *comments, NSError *error))completion;
 @end

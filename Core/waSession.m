@@ -1562,6 +1562,27 @@ static NSError *waErr(NSString *message, NSInteger code) {
     });
 }
 
+- (void)searchSuggest:(NSString *)query completion:(void (^)(NSArray *, NSArray *, NSArray *, NSArray *, NSError *))completion {
+    NSString *q = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!q.length) {
+        if (completion) completion([NSArray array], [NSArray array], [NSArray array], [NSArray array], nil);
+        return;
+    }
+    [[waDZAPI shared] getPath:@"/search/autocomplete" params:@{@"q": q, @"limit": @"5"} completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            if (completion) completion(nil, nil, nil, nil, error);
+            return;
+        }
+        if (completion) {
+            completion([self itemsFrom:waArray(json, @"artists") kind:waArtistType],
+                       [self itemsFrom:waArray(json, @"tracks") kind:waTrackType],
+                       [self itemsFrom:waArray(json, @"albums") kind:waAlbumType],
+                       [self itemsFrom:waArray(json, @"playlists") kind:waPlaylistType],
+                       nil);
+        }
+    }];
+}
+
 - (void)commentsForPath:(NSString *)path completion:(void (^)(NSArray *, NSError *))completion {
     [[waDZAPI shared] getPath:path params:@{@"limit": @"50"} completion:^(NSDictionary *json, NSError *error) {
         if (completion) completion(error ? nil : [self commentsFrom:json], error);
