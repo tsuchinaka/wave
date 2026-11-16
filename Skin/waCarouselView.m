@@ -1,5 +1,6 @@
 #import "waCarouselView.h"
 #import "waTileView.h"
+#import "waHScrollView.h"
 #import "waModel.h"
 
 @interface waCarouselView ()
@@ -36,7 +37,7 @@
         _seeAllButton.hidden = YES;
         [self addSubview:_seeAllButton];
 
-        _scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+        _scrollView = [[waHScrollView alloc] initWithFrame:CGRectZero];
         _scrollView.backgroundColor = [UIColor clearColor];
         _scrollView.pagingEnabled = NO;
         _scrollView.scrollEnabled = YES;

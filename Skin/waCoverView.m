@@ -1,4 +1,5 @@
 #import "waCoverView.h"
+#import "waHScrollView.h"
 #import "waSession.h"
 #import <QuartzCore/QuartzCore.h>
 
@@ -265,6 +266,7 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
 @property (nonatomic, strong) UIImageView *reflectionView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
+@property (nonatomic, assign) CGSize shadowSize;
 @end
 
 @implementation waCoverView
@@ -321,6 +323,10 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
         _subtitleLabel.shadowOffset = CGSizeMake(0.0, 1.0);
         _subtitleLabel.lineBreakMode = UILineBreakModeTailTruncation;
         [self addSubview:_subtitleLabel];
+
+        // One bitmap per cover. Live shadows on a scrolling strip stall an iPhone 4.
+        self.layer.shouldRasterize = YES;
+        self.layer.rasterizationScale = [UIScreen mainScreen].scale;
     }
     return self;
 }
@@ -368,10 +374,17 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
 }
 
 - (void)configureWithItem:(waItem *)item side:(CGFloat)side {
-    BOOL same = (_item == item && self.artView.image != nil && self.artView.image != waPaperFill());
+    if (side <= 40.0) side = self.artworkSide > 0.0 ? self.artworkSide : 100.0;
+    BOOL sameItem = (_item == item) && fabs(self.artworkSide - side) < 0.5;
+    // A recycled cell that comes back showing what it already shows has
+    // nothing to do. Reconfiguring used to dirty the layout, and the layout
+    // rebuilt the shadow path, which threw away the rasterized cover.
+    BOOL painted = self.artView.image != nil && self.artView.image != waPaperFill();
+    if (sameItem && painted) return;
+    BOOL same = sameItem && painted;
     if (!same) [[waSession shared] cancelArtworkForOwner:self];
     _item = item;
-    if (side > 40.0) _artworkSide = side;
+    _artworkSide = side;
     self.titleLabel.text = item.title.length ? item.title : @"";
     self.subtitleLabel.text = [self subtitleForItem:item];
     if (!same) {
@@ -408,10 +421,13 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
     self.reflectionView.frame = CGRectMake(2.0, 2.0 + side, side - 4.0, 16.0);
     self.titleLabel.frame = CGRectMake(0.0, 2.0 + side + 18.0, w, 16.0);
     self.subtitleLabel.frame = CGRectMake(0.0, 2.0 + side + 34.0, w, 14.0);
-    self.plate.layer.shadowPath = [UIBezierPath bezierPathWithRect:self.plate.bounds].CGPath;
-    // One bitmap per cover. Live shadows on a scrolling strip stall an iPhone 4.
-    self.layer.shouldRasterize = !self.highlighted;
-    self.layer.rasterizationScale = [UIScreen mainScreen].scale;
+    // One bitmap per cover. Rebuilding the shadow path on every pass threw
+    // that bitmap away and re-rasterized the whole card while scrolling.
+    CGSize plateSize = self.plate.bounds.size;
+    if (!CGSizeEqualToSize(plateSize, self.shadowSize)) {
+        self.shadowSize = plateSize;
+        self.plate.layer.shadowPath = [UIBezierPath bezierPathWithRect:self.plate.bounds].CGPath;
+    }
 }
 
 @end
@@ -432,7 +448,7 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
     if ((self = [super initWithFrame:frame])) {
         self.backgroundColor = [UIColor clearColor];
         self.opaque = NO;
-        _scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+        _scrollView = [[waHScrollView alloc] initWithFrame:CGRectZero];
         _scrollView.backgroundColor = [UIColor clearColor];
         _scrollView.showsHorizontalScrollIndicator = NO;
         _scrollView.showsVerticalScrollIndicator = NO;
@@ -491,8 +507,8 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
             [[covers objectAtIndex:extra] removeFromSuperview];
         }
         self.scrollView.contentSize = CGSizeMake(MAX(x + 4.0, CGRectGetWidth(self.bounds)), h + 8.0);
+        [self setNeedsLayout];
     }
-    [self setNeedsLayout];
 }
 
 - (void)layoutSubviews {
