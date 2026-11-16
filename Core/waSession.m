@@ -6,6 +6,7 @@
 #import "waDownloader.h"
 #import "waTLS.h"
 #import "waLyrics.h"
+#import "waStreamCache.h"
 #import <Security/Security.h>
 
 NSString * const waSessionDidChangeNotification = @"waSessionDidChangeNotification";
@@ -1190,11 +1191,37 @@ static NSError *waErr(NSString *message, NSInteger code) {
 #pragma mark - streaming
 
 - (void)streamURLForTrack:(waTrack *)track completion:(void (^)(NSURL *, waQuality, NSError *))completion {
+    [self streamURLForTrack:track attempt:0 completion:completion];
+}
+
+// Auth runs at launch. Pressing play before it lands used to fail with
+// "Connect your Deezer account first."; hold the request instead of losing it.
+- (void)streamURLForTrack:(waTrack *)track attempt:(NSInteger)attempt completion:(void (^)(NSURL *, waQuality, NSError *))completion {
     if (!track.identifier.length) { if (completion) completion(nil, 0, waErr(@"No track.", 400)); return; }
 
     NSString *local = [[waDownloader shared] localPathForTrackID:track.identifier];
     if (local.length) {
         if (completion) completion([NSURL fileURLWithPath:local], self.preferredQuality, nil);
+        return;
+    }
+
+    // A track that played to the end is already decrypted on disk. Start there:
+    // no license, no token, no CDN, and the first note lands immediately.
+    NSString *cachedStream = [waStreamCache completePathForTrackID:track.identifier];
+    if (cachedStream.length) {
+        waQuality cachedQuality = [[cachedStream pathExtension].lowercaseString isEqualToString:@"flac"]
+            ? self.maximumQuality : self.preferredQuality;
+        if ((NSInteger)cachedQuality > (NSInteger)self.maximumQuality) cachedQuality = self.maximumQuality;
+        [[waLog shared] log:@"resume cache %@", track.identifier];
+        if (completion) completion([NSURL fileURLWithPath:cachedStream], cachedQuality, nil);
+        return;
+    }
+
+    if (!self.authenticated && self.busy && attempt < 20) {
+        __weak waSession *weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakSelf streamURLForTrack:track attempt:attempt + 1 completion:completion];
+        });
         return;
     }
     // Always resolve through the authenticated gateway. A token that arrived

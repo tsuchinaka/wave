@@ -24,6 +24,7 @@
 #import "HTTPSource.h"
 #import "../../../Core/waCrypto.h"
 #import "../../../Core/waLog.h"
+#import "../../../Core/waStreamCache.h"
 
 static NSString *waStreamCacheDirectory(void) {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
@@ -239,9 +240,10 @@ const NSTimeInterval readTimeout = 1.0;
     _writeQueue = dispatch_queue_create("com.sokubit.wave.stream.write", DISPATCH_QUEUE_SERIAL);
     if (_downloadingSemaphore) { dispatch_release(_downloadingSemaphore); _downloadingSemaphore = NULL; }
     _downloadingSemaphore = dispatch_semaphore_create(0);
-    [self prepareCache:[NSString stringWithFormat:@"%lx.%@",
-                        (unsigned long)[[url absoluteString] hash],
-                        url.pathExtension]];
+    // Key by the file the URL points at, not by the signed URL: the token
+    // changes on every resolution and used to throw the cache away.
+    NSString *cacheID = [[url lastPathComponent] stringByDeletingPathExtension];
+    [self prepareCache:[waStreamCache fileNameForTrackID:cacheID extension:url.pathExtension]];
 
     // Resume a decrypted cache instead of rewriting it from zero when the
     // decoder seeks backwards on a track it already started.
@@ -471,6 +473,20 @@ const NSTimeInterval readTimeout = 1.0;
 
 - (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response {
     (void)connection;
+    NSInteger responseCode = [response isKindOfClass:[NSHTTPURLResponse class]]
+        ? [(NSHTTPURLResponse *)response statusCode] : 0;
+    if (_resumeAttempt && responseCode == 416) {
+        // The Range asked past the end: the cache already holds the whole file.
+        NSDictionary *cached = [[NSFileManager defaultManager] attributesOfItemAtPath:self.cachePath error:NULL];
+        _bytesExpected = (long long)[cached fileSize];
+        _byteCount = (long)_bytesExpected;
+        _downloadComplete = YES;
+        _resumeAttempt = NO;
+        [waStreamCache markCompleteAtPath:self.cachePath];
+        [_connection cancel];
+        dispatch_semaphore_signal(_downloadingSemaphore);
+        return;
+    }
     if ([response isKindOfClass:[NSHTTPURLResponse class]] &&
         [(NSHTTPURLResponse *)response statusCode] >= 400) {
         // Surface the server's answer: a failing lossless endpoint here is
@@ -488,6 +504,7 @@ const NSTimeInterval readTimeout = 1.0;
         if (code != 206) {
             NSFileHandle *reset = [NSFileHandle fileHandleForWritingAtPath:self.cachePath];
             @try { [reset truncateFileAtOffset:0]; [reset closeFile]; } @catch (NSException *e) { (void)e; }
+            [waStreamCache clearCompletionAtPath:self.cachePath];
             _byteCount = 0;
             _decryptOffset = 0;
         }
@@ -508,6 +525,7 @@ const NSTimeInterval readTimeout = 1.0;
             [_connection cancel];
             _byteCount = (long)_bytesExpected;
             _downloadComplete = YES;
+            [waStreamCache markCompleteAtPath:self.cachePath];
         }
     } @catch (NSException *e) { [[waLog shared] log:@"HTTPSource seekToEnd failed: %@", e.reason]; }
 }
@@ -614,6 +632,7 @@ const NSTimeInterval readTimeout = 1.0;
     // the actual total so size/tell/seek stay consistent from here on.
     if (_bytesExpected <= 0) _bytesExpected = _byteCount;
     _downloadComplete = YES;
+    if (!_temporaryCacheFile) [waStreamCache markCompleteAtPath:self.cachePath];
     dispatch_semaphore_signal(_downloadingSemaphore);
 }
 
