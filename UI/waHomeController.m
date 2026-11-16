@@ -206,6 +206,7 @@
 @interface waHomeController ()
 @property (nonatomic, strong) NSArray *sections;
 @property (nonatomic, strong) waChromeBar *shortcutBar;
+@property (nonatomic, strong) NSMutableDictionary *headerCache;
 @end
 
 @implementation waHomeController
@@ -220,6 +221,7 @@
         self.emptyTitle = @"Home";
         self.emptyMessage = @"No music.";
         _sections = [NSArray array];
+        _headerCache = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -300,6 +302,7 @@
         for (id obj in sections) if ([obj isKindOfClass:[waSection class]]) [clean addObject:obj];
         strongSelf.sections = clean;
         strongSelf.state = waPageStateLoaded;
+        [strongSelf.headerCache removeAllObjects];
         [strongSelf.tableView reloadData];
     }];
 }
@@ -323,11 +326,18 @@
     return 34.0;
 }
 
+// The table asks for a header every time one scrolls in. Building a label for
+// each pass showed up as hitching, so each section keeps its header view.
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     if (section < 0 || section >= (NSInteger)self.sections.count) return nil;
     waSection *sec = [self.sections objectAtIndex:(NSUInteger)section];
     CGFloat width = CGRectGetWidth(tableView.bounds);
-    return [waChrome embossedHeaderWithTitle:sec.title width:width];
+    NSNumber *key = [NSNumber numberWithInteger:section];
+    UIView *header = [self.headerCache objectForKey:key];
+    if (header && fabs(CGRectGetWidth(header.frame) - width) <= 0.5 && CGRectGetHeight(header.frame) > 1.0) return header;
+    header = [waChrome embossedHeaderWithTitle:sec.title width:width];
+    [self.headerCache setObject:header forKey:key];
+    return header;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -367,8 +377,9 @@
     CGFloat h = [waCoverStrip heightForSide:[self artworkSide]];
     CGFloat w = CGRectGetWidth(cell.contentView.bounds);
     if (w < 1.0) w = CGRectGetWidth(tableView.bounds) - 20.0;
-    strip.frame = CGRectMake(0.0, 0.0, w, h);
-    strip.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    CGRect wanted = CGRectMake(0.0, 0.0, w, h);
+    if (!CGRectEqualToRect(strip.frame, wanted)) strip.frame = wanted;
+    strip.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [strip setItems:sec.items side:[self artworkSide] target:self action:@selector(coverTapped:)];
     return cell;
 }
@@ -380,7 +391,7 @@
         return;
     }
     waCoverStrip *strip = (waCoverStrip *)[cell.contentView viewWithTag:600];
-    if (strip) strip.frame = cell.contentView.bounds;
+    if (strip && !CGRectEqualToRect(strip.frame, cell.contentView.bounds)) strip.frame = cell.contentView.bounds;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {

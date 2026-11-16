@@ -335,9 +335,13 @@ static NSError *waErr(NSString *message, NSInteger code) {
         }];
     }
 
-    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+    // The model pass is pure JSON to objects, so it runs off the main thread;
+    // only the hand-off touches UIKit.
+    dispatch_group_notify(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (chartError && !chartJSON) {
-            if (completion) completion(nil, chartError);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(nil, chartError);
+            });
 #if !OS_OBJECT_USE_OBJC
             dispatch_release(group);
 #endif
@@ -409,7 +413,9 @@ static NSError *waErr(NSString *message, NSInteger code) {
             section.identifier = @"reco.artists";
             [sections addObject:section];
         }
-        if (completion) completion(sections, nil);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(sections, nil);
+        });
 #if !OS_OBJECT_USE_OBJC
         dispatch_release(group);
 #endif
