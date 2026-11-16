@@ -121,6 +121,7 @@ typedef struct {
     double _bitrate;
     double _nextBitrate;
     float _volume;
+    float _preamp;
     float _fadeFrom;
     float _fadeTo;
     size_t _fadeTotal;
@@ -164,6 +165,7 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
         _decodeQueue = dispatch_queue_create("wave.audio.decode", DISPATCH_QUEUE_SERIAL);
         _nextDecodeQueue = dispatch_queue_create("wave.audio.decode.next", DISPATCH_QUEUE_SERIAL);
         _volume = 1.0f;
+        _preamp = 1.0f;
         _fadeFrom = 1.0f;
         _fadeTo = 1.0f;
         _eq.sampleRate = 44100.0f;
@@ -849,6 +851,12 @@ float waEQMagnitudeDB(const waEQCoeff *coeffs, float sampleRate, float frequency
     [self rebuildEQResettingState:NO];
 }
 
+- (void)setPreampDB:(float)db {
+    if (db < -12.0f) db = -12.0f;
+    if (db > 12.0f) db = 12.0f;
+    _preamp = powf(10.0f, db / 20.0f);
+}
+
 - (void)setLimiterEnabled:(BOOL)enabled {
     _eq.limiter = enabled;
 }
@@ -882,8 +890,9 @@ static inline float waSoftCeiling(float x) {
                 _fading = NO;
             }
         }
-        float left = samples[i * 2] * _eq.preGain;
-        float right = samples[i * 2 + 1] * _eq.preGain;
+        float trim = _eq.preGain * _preamp;
+        float left = samples[i * 2] * trim;
+        float right = samples[i * 2 + 1] * trim;
         if (_eq.active) {
             for (int band = 0; band < WA_EQ_BANDS; band++) {
                 left = waProcessBiquad(&_eq.bands[band][0], left);

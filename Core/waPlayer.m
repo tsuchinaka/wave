@@ -21,6 +21,7 @@ static NSString * const waCrossfadeDurationKey = @"wave.crossfadeDuration";
 static NSString * const waGeniusKey = @"wave.genius";
 static NSString * const waEQKey = @"wave.eq";
 static NSString * const waEQGainsKey = @"wave.eq.gains";
+static NSString * const waEQPreampKey = @"wave.eq.preamp";
 static NSString * const waLimiterKey = @"wave.compressor";
 static NSString * const waVolumeKey = @"wave.volume";
 
@@ -56,6 +57,7 @@ static NSString * const waVolumeKey = @"wave.volume";
 
 @implementation waPlayer {
     float _gains[WA_EQ_BANDS];
+    float _preampDB;
 }
 
 + (waPlayer *)shared {
@@ -82,6 +84,7 @@ static NSString * const waVolumeKey = @"wave.volume";
         for (NSUInteger band = 0; band < stored.count && band < WA_EQ_BANDS; band++) {
             _gains[band] = [[stored objectAtIndex:band] floatValue];
         }
+        _preampDB = [defaults objectForKey:waEQPreampKey] ? [defaults floatForKey:waEQPreampKey] : 0.0f;
         _persistQueue = dispatch_queue_create("wave.player.persist", DISPATCH_QUEUE_SERIAL);
         [self restoreQueue];
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
@@ -342,6 +345,7 @@ static NSString * const waVolumeKey = @"wave.volume";
     float gains[WA_EQ_BANDS];
     memcpy(gains, _gains, sizeof(gains));
     [core setGains:gains];
+    [core setPreampDB:_preampDB];
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL limiter = [defaults objectForKey:waLimiterKey] ? [defaults boolForKey:waLimiterKey] : YES;
     [core setLimiterEnabled:limiter];
@@ -938,6 +942,16 @@ static NSString * const waVolumeKey = @"wave.volume";
 - (float)gainForBand:(NSUInteger)band {
     return band < WA_EQ_BANDS ? _gains[band] : 0.0f;
 }
+
+- (void)setPreampDB:(float)db {
+    if (db < -12.0f) db = -12.0f;
+    if (db > 12.0f) db = 12.0f;
+    _preampDB = db;
+    [self.core setPreampDB:db];
+    [[NSUserDefaults standardUserDefaults] setFloat:db forKey:waEQPreampKey];
+}
+
+- (float)preampDB { return _preampDB; }
 
 - (NSArray *)equalizerPresets {
     return @[@"Flat", @"Bass Booster", @"Treble", @"Vocal", @"Rock", @"Pop", @"Dance", @"Classical", @"Electronic", @"Loudness"];

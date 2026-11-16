@@ -64,6 +64,9 @@ extern NSString * const waPlayerDidFailNotification;
 // 10-band octave EQ, values in dB (-12..12). Bands are 31 Hz to 16 kHz.
 - (void)setGain:(float)gain forBand:(NSUInteger)band;
 - (float)gainForBand:(NSUInteger)band;
+// Level trim in dB, -12..+12, independent of the bands and of the preset.
+- (void)setPreampDB:(float)db;
+- (float)preampDB;
 - (NSArray *)equalizerPresets;
 - (NSString *)equalizerPresetName;
 - (void)applyPresetNamed:(NSString *)name;

@@ -50,5 +50,7 @@ float waEQMagnitudeDB(const waEQCoeff *coeffs, float sampleRate, float frequency
 - (void)stop;
 - (void)seekTo:(NSTimeInterval)time;
 - (void)setGains:(const float *)gains;
+// Output gain in dB, -12..+12, applied after the bands and before the limiter.
+- (void)setPreampDB:(float)db;
 - (void)setLimiterEnabled:(BOOL)enabled;
 @end

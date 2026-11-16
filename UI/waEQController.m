@@ -7,6 +7,11 @@
 #define WA_EQ_MIN -12.0f
 #define WA_EQ_MAX 12.0f
 
+static NSString *waGainText(float db) {
+    if (fabsf(db) < 0.05f) return @"0.0";
+    return [NSString stringWithFormat:@"%+.1f", db];
+}
+
 static NSString *waEQBandLabel(NSUInteger band) {
     static NSString *labels[WA_EQ_BANDS] = {@"31", @"62", @"125", @"250", @"500", @"1k", @"2k", @"4k", @"8k", @"16k"};
     return band < WA_EQ_BANDS ? labels[band] : @"";
@@ -79,6 +84,9 @@ static NSString *waEQBandLabel(NSUInteger band) {
 @interface waEQController () <UIActionSheetDelegate>
 @property (nonatomic, strong) waEQGraphView *graph;
 @property (nonatomic, strong) UIButton *presetButton;
+@property (nonatomic, strong) UILabel *gainLabel;
+@property (nonatomic, strong) UISlider *gainSlider;
+@property (nonatomic, strong) UILabel *gainValueLabel;
 @property (nonatomic, strong) NSMutableArray *sliders;
 @property (nonatomic, strong) NSMutableArray *valueLabels;
 @property (nonatomic, copy) NSArray *presetNames;
@@ -113,6 +121,27 @@ static NSString *waEQBandLabel(NSUInteger band) {
     self.presetButton.titleLabel.font = [UIFont boldSystemFontOfSize:15.0];
     [self.presetButton addTarget:self action:@selector(showPresets) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.presetButton];
+
+    self.gainLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.gainLabel.backgroundColor = [UIColor clearColor];
+    self.gainLabel.font = [UIFont boldSystemFontOfSize:12.0];
+    self.gainLabel.textColor = [UIColor colorWithWhite:0.30 alpha:1.0];
+    self.gainLabel.text = @"Gain";
+    [self.view addSubview:self.gainLabel];
+
+    self.gainSlider = [[UISlider alloc] initWithFrame:CGRectZero];
+    self.gainSlider.minimumValue = WA_EQ_MIN;
+    self.gainSlider.maximumValue = WA_EQ_MAX;
+    [self.gainSlider addTarget:self action:@selector(gainChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.gainSlider addTarget:self action:@selector(gainSettled:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+    [self.view addSubview:self.gainSlider];
+
+    self.gainValueLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.gainValueLabel.backgroundColor = [UIColor clearColor];
+    self.gainValueLabel.font = [UIFont boldSystemFontOfSize:12.0];
+    self.gainValueLabel.textColor = [UIColor colorWithWhite:0.30 alpha:1.0];
+    self.gainValueLabel.textAlignment = UITextAlignmentRight;
+    [self.view addSubview:self.gainValueLabel];
 
     for (NSUInteger band = 0; band < WA_EQ_BANDS; band++) {
         UILabel *value = [[UILabel alloc] initWithFrame:CGRectZero];
@@ -151,7 +180,13 @@ static NSString *waEQBandLabel(NSUInteger band) {
     CGFloat width = CGRectGetWidth(self.view.bounds);
     CGFloat height = CGRectGetHeight(self.view.bounds);
     self.graph.frame = CGRectMake(8.0, 8.0, width - 16.0, 96.0);
-    self.presetButton.frame = CGRectMake(8.0, 112.0, width - 16.0, 32.0);
+    self.presetButton.frame = CGRectMake(8.0, 112.0, 104.0, 32.0);
+    self.gainLabel.frame = CGRectMake(122.0, 112.0, 34.0, 32.0);
+    self.gainValueLabel.frame = CGRectMake(width - 58.0, 112.0, 50.0, 32.0);
+    CGFloat gainLeft = 158.0;
+    CGFloat gainRight = width - 62.0;
+    if (gainRight < gainLeft + 40.0) gainRight = gainLeft + 40.0;
+    self.gainSlider.frame = CGRectMake(gainLeft, 116.0, gainRight - gainLeft, 23.0);
 
     CGFloat top = 156.0;
     CGFloat bottom = height - [[waRootController shared] miniPlayerHeight] - 8.0;
@@ -180,6 +215,9 @@ static NSString *waEQBandLabel(NSUInteger band) {
         value.text = [NSString stringWithFormat:@"%+.0f", gain];
     }
     [self.graph setGains:gains];
+    float preamp = [[waPlayer shared] preampDB];
+    self.gainSlider.value = preamp;
+    self.gainValueLabel.text = waGainText(preamp);
 }
 
 - (void)syncPresetButton {
@@ -200,6 +238,18 @@ static NSString *waEQBandLabel(NSUInteger band) {
     [[waPlayer shared] applyPresetNamed:[self.presetNames objectAtIndex:(NSUInteger)buttonIndex]];
     [self readGains];
     [self syncPresetButton];
+}
+
+- (void)gainChanged:(UISlider *)slider {
+    self.gainValueLabel.text = waGainText(slider.value);
+}
+
+// Half-dB steps, committed once the finger lifts, same as the bands.
+- (void)gainSettled:(UISlider *)slider {
+    float snapped = roundf(slider.value * 2.0f) / 2.0f;
+    slider.value = snapped;
+    self.gainValueLabel.text = waGainText(snapped);
+    [[waPlayer shared] setPreampDB:snapped];
 }
 
 - (void)bandChanged:(UISlider *)slider {
@@ -228,6 +278,7 @@ static NSString *waEQBandLabel(NSUInteger band) {
 
 - (void)reset {
     [[waPlayer shared] applyPresetNamed:@"Flat"];
+    [[waPlayer shared] setPreampDB:0.0f];
     [self readGains];
     [self syncPresetButton];
 }
