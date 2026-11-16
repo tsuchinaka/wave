@@ -18,20 +18,6 @@ typedef enum {
     waSearchScreenResults
 } waSearchScreen;
 
-// The search bar in a navigation titleView paints its own gray gradient over
-// the bar. A one-pixel clear image is enough to make it disappear and leave
-// only the field.
-static UIImage *waClearBarImage(void) {
-    static UIImage *image;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        UIGraphicsBeginImageContextWithOptions(CGSizeMake(1.0, 1.0), NO, 0.0);
-        image = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-    });
-    return image;
-}
-
 static UITextField *waSearchField(UIView *view) {
     for (UIView *sub in view.subviews) {
         if ([sub isKindOfClass:[UITextField class]]) return (UITextField *)sub;
@@ -39,16 +25,6 @@ static UITextField *waSearchField(UIView *view) {
         if (deep) return deep;
     }
     return nil;
-}
-
-static void waHideSearchBackground(UIView *view) {
-    for (UIView *sub in view.subviews) {
-        NSString *name = NSStringFromClass([sub class]);
-        if ([sub isKindOfClass:[UIImageView class]] && [name rangeOfString:@"Background"].location != NSNotFound) {
-            sub.hidden = YES;
-        }
-        waHideSearchBackground(sub);
-    }
 }
 
 @interface waSearchController () <UISearchBarDelegate>
@@ -96,6 +72,8 @@ static void waHideSearchBackground(UIView *view) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    self.navigationController.navigationBar.barStyle = UIBarStyleBlack;
+    self.navigationController.navigationBar.translucent = NO;
     self.tableView.backgroundColor = [UIColor groupTableViewBackgroundColor];
     [self installSearchBar];
     [self loadRecents];
@@ -131,18 +109,14 @@ static void waHideSearchBackground(UIView *view) {
     host.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     host.backgroundColor = [UIColor clearColor];
 
-    UISearchBar *bar = [[UISearchBar alloc] initWithFrame:CGRectMake(0.0, 7.0, CGRectGetWidth(host.bounds), 36.0)];
+    UISearchBar *bar = [[UISearchBar alloc] initWithFrame:host.bounds];
     bar.delegate = self;
     bar.placeholder = @"Search";
-    bar.barStyle = UIBarStyleDefault;
-    bar.translucent = YES;
     bar.showsCancelButton = NO;
     bar.autocorrectionType = UITextAutocorrectionTypeNo;
     bar.autocapitalizationType = UITextAutocapitalizationTypeNone;
     bar.spellCheckingType = UITextSpellCheckingTypeNo;
     bar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [bar setBackgroundImage:waClearBarImage()];
-    waHideSearchBackground(bar);
     UITextField *field = waSearchField(bar);
     if (field) {
         field.returnKeyType = UIReturnKeySearch;
@@ -166,7 +140,7 @@ static void waHideSearchBackground(UIView *view) {
     if (width < 140.0) width = 140.0;
     if (fabs(CGRectGetWidth(self.searchHost.frame) - width) < 0.5) return;
     self.searchHost.frame = CGRectMake(0.0, 0.0, width, 44.0);
-    self.searchBar.frame = CGRectMake(0.0, 7.0, width, 36.0);
+    self.searchBar.frame = CGRectMake(0.0, 0.0, width, 44.0);
     // Resizing in place keeps the field first responder. Reassigning
     // titleView is what dismisses the keyboard on iOS 5.
     [bar setNeedsLayout];
