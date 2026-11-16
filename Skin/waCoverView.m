@@ -21,11 +21,12 @@ static UIImage *waPaperFill(void) {
     return image;
 }
 
-static UIImage *waReflection(UIImage *image, CGFloat height) {
+static UIImage *waReflection(UIImage *image, CGFloat height, CGFloat scale) {
     if (!image || height < 1.0) return nil;
     CGSize size = image.size;
     if (size.width < 1.0 || size.height < 1.0) return nil;
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size.width, height), NO, 0.0);
+    if (scale < 1.0) scale = 1.0;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size.width, height), NO, scale);
     CGContextRef ctx = UIGraphicsGetCurrentContext();
     CGContextTranslateCTM(ctx, 0.0, height);
     CGContextScaleCTM(ctx, 1.0, -1.0);
@@ -387,9 +388,12 @@ static NSCache *waReflectionCache(void) {
         }
         self.reflectionView.image = nil;
         waItem *requested = self.item;
+        // Read the screen on the main thread: UIScreen is not ours to query
+        // from the drawing queue.
+        CGFloat scale = [UIScreen mainScreen].scale;
         __weak waCoverView *weakSelf = self;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-            UIImage *reflection = waReflection(image, 16.0);
+            UIImage *reflection = waReflection(image, 16.0, scale);
             if (!reflection) return;
             [waReflectionCache() setObject:reflection forKey:key];
             dispatch_async(dispatch_get_main_queue(), ^{

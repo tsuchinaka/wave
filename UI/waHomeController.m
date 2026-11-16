@@ -334,7 +334,11 @@
     CGFloat width = CGRectGetWidth(tableView.bounds);
     NSNumber *key = [NSNumber numberWithInteger:section];
     UIView *header = [self.headerCache objectForKey:key];
-    if (header && fabs(CGRectGetWidth(header.frame) - width) <= 0.5 && CGRectGetHeight(header.frame) > 1.0) return header;
+    // Only hand back one the table has released. Reusing a view that is still
+    // parented makes UIKit re-add it on every layout pass.
+    if (header && header.superview == nil && fabs(CGRectGetWidth(header.frame) - width) <= 0.5 && CGRectGetHeight(header.frame) > 1.0) {
+        return header;
+    }
     header = [waChrome embossedHeaderWithTitle:sec.title width:width];
     [self.headerCache setObject:header forKey:key];
     return header;
