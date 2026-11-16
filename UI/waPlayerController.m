@@ -114,6 +114,7 @@ enum {
 @end
 
 @implementation waPlayerController
+    CGRect _shadowWellBounds;
 
 - (void)loadView {
     UIView *view = [[UIView alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
@@ -659,8 +660,15 @@ enum {
     } else {
         self.lyricsSpinner.center = CGPointMake(CGRectGetMidX(self.artWell.frame), CGRectGetMidY(self.artWell.frame));
     }
-    self.artWell.layer.shadowPath = [UIBezierPath bezierPathWithRect:self.artWell.bounds].CGPath;
-    self.reflectionMask.frame = self.reflectionView.bounds;
+    CGRect wellBounds = self.artWell.bounds;
+    if (!CGRectEqualToRect(wellBounds, _shadowWellBounds)) {
+        _shadowWellBounds = wellBounds;
+        // Rebuilding the path on every layout throws away the cached shadow.
+        self.artWell.layer.shadowPath = [UIBezierPath bezierPathWithRect:wellBounds].CGPath;
+    }
+    if (!CGRectEqualToRect(self.reflectionView.bounds, self.reflectionMask.frame)) {
+        self.reflectionMask.frame = self.reflectionView.bounds;
+    }
 }
 
 - (void)layoutPortrait:(CGRect)bounds {

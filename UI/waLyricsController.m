@@ -3,6 +3,7 @@
 #import "waSession.h"
 #import "waLyrics.h"
 #import <QuartzCore/CADisplayLink.h>
+#import <sys/sysctl.h>
 
 @interface waLyricsController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) waTrack *track;
@@ -81,7 +82,10 @@
     [super viewWillAppear:animated];
     [self.highlightLink invalidate];
     self.highlightLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayFired:)];
-    self.highlightLink.frameInterval = 2;
+    NSUInteger cores = 0;
+    size_t coreSize = sizeof(cores);
+    sysctlbyname("hw.ncpu", &cores, &coreSize, NULL, 0);
+    self.highlightLink.frameInterval = cores >= 2 ? 2 : 4;
     [self.highlightLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
 

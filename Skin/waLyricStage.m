@@ -289,7 +289,9 @@ static waLyricProfile waLyricCurrentProfile(void) {
     }
     if (!self.link) {
         self.link = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayFired:)];
-        self.link.frameInterval = self.profile == waLyricProfileA5 ? 1 : 2;
+        // 30 Hz on a single-core A4 costs a full CoreText pass twice per
+        // frame. Karaoke is readable at 15; A5 keeps every frame.
+        self.link.frameInterval = self.profile == waLyricProfileA5 ? 1 : 4;
         [self.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
     }
     self.link.paused = NO;
