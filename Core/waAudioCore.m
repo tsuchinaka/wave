@@ -86,13 +86,26 @@ typedef struct {
     float x1, x2, y1, y2;
 } waBiquad;
 
+// Lookahead lets the gain drop before a peak reaches the DAC instead of
+// rounding that peak off as it passes. 128 frames is about 3 ms at 44.1 kHz.
+#define WA_LIMIT_LOOKAHEAD 128
+
+typedef struct {
+    float delay[2][WA_LIMIT_LOOKAHEAD];
+    int index;
+    float envelope;
+    float gain;
+} waLimiter;
+
 typedef struct {
     waBiquad bands[WA_EQ_BANDS][2];
+    waBiquad highpass[2];
     float gains[WA_EQ_BANDS];
     float preGain;
     float sampleRate;
     BOOL active;
     BOOL limiter;
+    waLimiter level;
 } waEQState;
 
 @interface waAudioCore () {
@@ -821,10 +834,37 @@ float waEQMagnitudeDB(const waEQCoeff *coeffs, float sampleRate, float frequency
 // Coefficients only. The filter memory is left untouched so a live gain
 // change does not click; a sample-rate change is the one case that must
 // drop it, because the old state was computed against a different clock.
+static void waHighpass(waBiquad *filter, float freq, float sr) {
+    float omega = 2.0f * (float)M_PI * freq / sr;
+    float cosw = cosf(omega);
+    float alpha = sinf(omega) / (2.0f * 0.70710678f);
+    waEQCoeff coeff;
+    waEQStore(&coeff,
+              (1.0f + cosw) * 0.5f, -(1.0f + cosw), (1.0f + cosw) * 0.5f,
+              1.0f + alpha, -2.0f * cosw, 1.0f - alpha);
+    filter->b0 = coeff.b0; filter->b1 = coeff.b1; filter->b2 = coeff.b2;
+    filter->a1 = coeff.a1; filter->a2 = coeff.a2;
+}
+
+- (void)resetLimiter {
+    memset(&_eq.level, 0, sizeof(_eq.level));
+    _eq.level.gain = 1.0f;
+}
+
 - (void)rebuildEQResettingState:(BOOL)resetState {
     waEQCoeff coeffs[WA_EQ_BANDS];
     float sr = _eq.sampleRate > 0 ? _eq.sampleRate : 44100.0f;
     _eq.preGain = waEQBuild(_eq.gains, sr, coeffs);
+    float hpfHz = 40.0f;
+    if (hpfHz >= sr * 0.2f) hpfHz = sr * 0.2f;
+    for (int ch = 0; ch < 2; ch++) {
+        waHighpass(&_eq.highpass[ch], hpfHz, sr);
+        if (resetState) {
+            _eq.highpass[ch].x1 = _eq.highpass[ch].x2 = 0.0f;
+            _eq.highpass[ch].y1 = _eq.highpass[ch].y2 = 0.0f;
+        }
+    }
+    if (resetState) [self resetLimiter];
     BOOL active = NO;
     for (int band = 0; band < WA_EQ_BANDS; band++) {
         if (fabsf(_eq.gains[band]) > 0.05f) active = YES;
@@ -890,21 +930,42 @@ static inline float waSoftCeiling(float x) {
                 _fading = NO;
             }
         }
-        float trim = _eq.preGain * _preamp;
-        float left = samples[i * 2] * trim;
-        float right = samples[i * 2 + 1] * trim;
+        // Auto makeup stays before the bands so they never see a hot input.
+        // The user's Gain belongs after them: before, it just undid the
+        // headroom the makeup had bought.
+        float left = samples[i * 2] * _eq.preGain;
+        float right = samples[i * 2 + 1] * _eq.preGain;
+        left = waProcessBiquad(&_eq.highpass[0], left);
+        right = waProcessBiquad(&_eq.highpass[1], right);
         if (_eq.active) {
             for (int band = 0; band < WA_EQ_BANDS; band++) {
                 left = waProcessBiquad(&_eq.bands[band][0], left);
                 right = waProcessBiquad(&_eq.bands[band][1], right);
             }
         }
-        left *= volume;
-        right *= volume;
+        left *= _preamp * volume;
+        right *= _preamp * volume;
+
         if (_eq.limiter) {
-            left = waSoftCeiling(left);
-            right = waSoftCeiling(right);
+            waLimiter *lim = &_eq.level;
+            float peak = fabsf(left);
+            if (fabsf(right) > peak) peak = fabsf(right);
+            // Instant attack, ~120 ms release, linked across channels.
+            if (peak > lim->envelope) lim->envelope = peak;
+            else lim->envelope += (peak - lim->envelope) * 0.00025f;
+            float wanted = lim->envelope > waEQCeiling ? waEQCeiling / lim->envelope : 1.0f;
+            float step = wanted < lim->gain ? 0.35f : 0.015f;
+            lim->gain += (wanted - lim->gain) * step;
+            float delayedL = lim->delay[0][lim->index];
+            float delayedR = lim->delay[1][lim->index];
+            lim->delay[0][lim->index] = left;
+            lim->delay[1][lim->index] = right;
+            lim->index = (lim->index + 1) % WA_LIMIT_LOOKAHEAD;
+            left = waSoftCeiling(delayedL * lim->gain);
+            right = waSoftCeiling(delayedR * lim->gain);
         } else {
+            // Without the limiter there is no lookahead delay, so the output
+            // is still the current sample.
             if (left > 1.0f) left = 1.0f; else if (left < -1.0f) left = -1.0f;
             if (right > 1.0f) right = 1.0f; else if (right < -1.0f) right = -1.0f;
         }
