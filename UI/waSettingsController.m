@@ -1,4 +1,5 @@
 #import "waSettingsController.h"
+#import "waActions.h"
 #import "waEQController.h"
 #import "waStorageController.h"
 #import "waLogsController.h"
@@ -13,7 +14,6 @@
 enum {
     waSettingsSheetPlayback = 1,
     waSettingsSheetDownload = 2,
-    waSettingsSheetLastFM = 3,
     waSettingsAlertLogout = 10,
     waSettingsAlertLastFMLogin = 11
 };
@@ -36,7 +36,7 @@ static NSString * const waKeyDownloadParallel = @"wave.downloadParallel";
 static NSString * const waKeyWifiOnly = @"wave.wifiOnly";
 static NSString * const waKeyDiscordRPC = @"wave.discordRPC";
 
-@interface waSettingsController () <UIActionSheetDelegate, UIAlertViewDelegate>
+@interface waSettingsController () <UIAlertViewDelegate>
 @property (nonatomic, strong) UISwitch *crossfadeSwitch;
 @property (nonatomic, strong) UISwitch *compressorSwitch;
 @property (nonatomic, strong) UISwitch *wifiSwitch;
@@ -44,8 +44,6 @@ static NSString * const waKeyDiscordRPC = @"wave.discordRPC";
 @property (nonatomic, strong) UISwitch *lastFMSwitch;
 @property (nonatomic, strong) UIStepper *crossfadeStepper;
 @property (nonatomic, strong) UIStepper *parallelStepper;
-@property (nonatomic, copy) NSArray *sheetQualities;
-@property (nonatomic, assign) NSInteger sheetKind;
 @end
 
 @implementation waSettingsController
@@ -474,14 +472,13 @@ static NSString * const waKeyDiscordRPC = @"wave.discordRPC";
         return;
     }
     NSString *title = fm.username.length ? fm.username : @"Last.fm";
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:title
-                                                       delegate:self
-                                              cancelButtonTitle:@"Cancel"
-                                         destructiveButtonTitle:@"Log Out"
-                                              otherButtonTitles:nil];
-    sheet.tag = waSettingsSheetLastFM;
+    __weak waSettingsController *weakSelf = self;
+    NSArray *actions = [NSArray arrayWithObject:[waAction actionWithTitle:@"Log Out" destructive:YES handler:^{
+        [[waLastFM shared] logout];
+        [weakSelf.tableView reloadData];
+    }]];
     UIView *host = self.tabBarController.view ?: (self.navigationController.view ?: self.view);
-    [sheet showInView:host];
+    [waActions showInView:host title:title actions:actions];
 }
 
 - (void)lastFMScrobbleChanged:(UISwitch *)sender {
@@ -511,38 +508,28 @@ static NSString * const waKeyDiscordRPC = @"wave.discordRPC";
 }
 
 - (void)showQualitySheet:(NSInteger)kind {
-    self.sheetKind = kind;
-    self.sheetQualities = [self allowedQualities];
     NSString *title = (kind == waSettingsSheetPlayback) ? @"Playback Quality" : @"Download Quality";
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:title delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
-    for (NSNumber *number in self.sheetQualities) {
-        [sheet addButtonWithTitle:[self qualityTitle:(waQuality)[number integerValue]]];
+    NSArray *qualities = [self allowedQualities];
+    __weak waSettingsController *weakSelf = self;
+    NSMutableArray *actions = [NSMutableArray array];
+    for (NSNumber *number in qualities) {
+        waQuality quality = (waQuality)[number integerValue];
+        [actions addObject:[waAction actionWithTitle:[self qualityTitle:quality] destructive:NO handler:^{
+            waSettingsController *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSUserDefaults *defaults = [strongSelf defaults];
+            if (kind == waSettingsSheetPlayback) {
+                [waSession shared].preferredQuality = quality;
+                [defaults setInteger:quality forKey:waKeyPlaybackQuality];
+            } else {
+                [defaults setInteger:quality forKey:waKeyDownloadQuality];
+            }
+            [defaults synchronize];
+            [strongSelf.tableView reloadData];
+        }]];
     }
-    NSInteger cancel = [sheet addButtonWithTitle:@"Cancel"];
-    sheet.cancelButtonIndex = cancel;
-    sheet.tag = (int)kind;
     UIView *host = self.tabBarController.view ?: (self.navigationController.view ?: self.view);
-    [sheet showInView:host];
-}
-
-- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
-    if (buttonIndex == actionSheet.cancelButtonIndex) return;
-    if (actionSheet.tag == waSettingsSheetLastFM) {
-        if (buttonIndex == actionSheet.destructiveButtonIndex) [[waLastFM shared] logout];
-        [self.tableView reloadData];
-        return;
-    }
-    if (buttonIndex < 0 || buttonIndex >= (NSInteger)self.sheetQualities.count) return;
-    waQuality quality = (waQuality)[[self.sheetQualities objectAtIndex:buttonIndex] integerValue];
-    NSUserDefaults *defaults = [self defaults];
-    if (actionSheet.tag == waSettingsSheetPlayback) {
-        [waSession shared].preferredQuality = quality;
-        [defaults setInteger:quality forKey:waKeyPlaybackQuality];
-    } else {
-        [defaults setInteger:quality forKey:waKeyDownloadQuality];
-    }
-    [defaults synchronize];
-    [self.tableView reloadData];
+    [waActions showInView:host title:title actions:actions];
 }
 
 #pragma mark - Controls

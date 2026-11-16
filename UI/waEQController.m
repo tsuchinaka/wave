@@ -1,4 +1,5 @@
 #import "waEQController.h"
+#import "waActions.h"
 #import "waPlayer.h"
 #import "waRootController.h"
 #import "waAudioCore.h"
@@ -81,7 +82,7 @@ static NSString *waEQBandLabel(NSUInteger band) {
 
 @end
 
-@interface waEQController () <UIActionSheetDelegate>
+@interface waEQController ()
 @property (nonatomic, strong) waEQGraphView *graph;
 @property (nonatomic, strong) UIButton *presetButton;
 @property (nonatomic, strong) UILabel *gainLabel;
@@ -226,18 +227,18 @@ static NSString *waEQBandLabel(NSUInteger band) {
 }
 
 - (void)showPresets {
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Preset" delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
-    for (NSString *name in self.presetNames) [sheet addButtonWithTitle:name];
-    sheet.cancelButtonIndex = [sheet addButtonWithTitle:@"Cancel"];
-    [sheet showInView:self.view];
-}
-
-- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
-    (void)actionSheet;
-    if (buttonIndex < 0 || buttonIndex >= (NSInteger)self.presetNames.count) return;
-    [[waPlayer shared] applyPresetNamed:[self.presetNames objectAtIndex:(NSUInteger)buttonIndex]];
-    [self readGains];
-    [self syncPresetButton];
+    __weak waEQController *weakSelf = self;
+    NSMutableArray *actions = [NSMutableArray array];
+    for (NSString *name in self.presetNames) {
+        [actions addObject:[waAction actionWithTitle:name destructive:NO handler:^{
+            waEQController *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [[waPlayer shared] applyPresetNamed:name];
+            [strongSelf readGains];
+            [strongSelf syncPresetButton];
+        }]];
+    }
+    [waActions showInView:self.view title:@"Preset" actions:actions];
 }
 
 - (void)gainChanged:(UISlider *)slider {

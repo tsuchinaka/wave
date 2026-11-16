@@ -1,4 +1,5 @@
 #import "waPlayerController.h"
+#import "waActions.h"
 
 #import "waQueueController.h"
 #import "waRootController.h"
@@ -68,12 +69,10 @@ static void waBoxBlur(unsigned char *px, int w, int h, int radius) {
 }
 
 enum {
-    waPlayerSheetTrack = 1,
-    waPlayerSheetLastFM = 2,
     waPlayerAlertLastFMLogin = 20
 };
 
-@interface waPlayerController () <UIActionSheetDelegate, UIAlertViewDelegate>
+@interface waPlayerController () <UIAlertViewDelegate>
 @property (nonatomic, strong) UIImageView *backdropView;
 @property (nonatomic, strong) UIView *artWell;
 @property (nonatomic, strong) UIImageView *artworkView;
@@ -827,23 +826,44 @@ enum {
         NSString *airName = cast.airPlayName;
         title = (airName.length && ![airName isEqualToString:@"AirPlay"]) ? airName : @"AirPlay";
     }
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:title delegate:self cancelButtonTitle:nil destructiveButtonTitle:nil otherButtonTitles:nil];
-    [sheet addButtonWithTitle:[self castRow:@"This iPhone" current:phone]];
+    NSMutableArray *actions = [NSMutableArray array];
+    waPlayer *player = [waPlayer shared];
+    [actions addObject:[waAction actionWithTitle:[self castRow:@"This iPhone" current:phone] destructive:NO handler:^{
+        waCast *current = [waCast shared];
+        if (!current.target) return;
+        [current clearTarget];
+        [self castChanged];
+        if (player.currentTrack) [player refreshOutput];
+    }]];
     NSString *air = @"AirPlay";
     if (cast.airPlayActive) {
         NSString *name = cast.airPlayName;
         if (name.length && ![name isEqualToString:@"AirPlay"]) air = [NSString stringWithFormat:@"AirPlay (%@)", name];
     }
-    [sheet addButtonWithTitle:[self castRow:air current:airplay]];
-    for (waCastDevice *device in cast.devices) {
+    [actions addObject:[waAction actionWithTitle:[self castRow:air current:airplay] destructive:NO handler:^{
+        waCast *current = [waCast shared];
+        BOOL wasCasting = current.target != nil;
+        if (wasCasting) [current clearTarget];
+        [self castChanged];
+        if (wasCasting && player.currentTrack) [player refreshOutput];
+        [self showAirPlayPicker];
+    }]];
+    // Snapshot: discovery keeps adding devices while the sheet is up, and the
+    // buttons came from this list. Re-reading it at tap time is what used to
+    // pick a different device than the one that was tapped.
+    NSArray *devices = [NSArray arrayWithArray:cast.devices];
+    for (waCastDevice *device in devices) {
         NSString *label = device.model.length ? [NSString stringWithFormat:@"%@ (%@)", device.name, device.model] : device.name;
         BOOL here = chromecast && [device.host isEqualToString:cast.target.host];
-        [sheet addButtonWithTitle:[self castRow:label current:here]];
+        [actions addObject:[waAction actionWithTitle:[self castRow:label current:here] destructive:NO handler:^{
+            waCast *current = [waCast shared];
+            if ([device.host isEqualToString:current.target.host]) return;
+            [current selectDevice:device];
+            [self castChanged];
+            if (player.currentTrack) [player refreshOutput];
+        }]];
     }
-    if (!cast.devices.count) [sheet addButtonWithTitle:@"Searching…"];
-    sheet.cancelButtonIndex = [sheet addButtonWithTitle:@"Cancel"];
-    sheet.tag = 7;
-    [sheet showInView:self.view];
+    [waActions showInView:self.view title:title actions:actions];
 }
 
 - (void)refreshTrack {
@@ -1183,9 +1203,20 @@ enum {
     if (gesture.state != UIGestureRecognizerStateBegan) return;
     waTrack *track = [waPlayer shared].currentTrack;
     if (!track.identifier.length) return;
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:track.title delegate:self cancelButtonTitle:@"Cancel" destructiveButtonTitle:nil otherButtonTitles:@"Lyrics", @"Copy Link", nil];
-    sheet.tag = waPlayerSheetTrack;
-    [sheet showInView:self.view];
+    NSMutableArray *actions = [NSMutableArray array];
+    __weak waPlayerController *weakSelf = self;
+    [actions addObject:[waAction actionWithTitle:@"Lyrics" destructive:NO handler:^{
+        waPlayerController *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.showingLyrics) return;
+        [strongSelf toggleLyrics];
+    }]];
+    [actions addObject:[waAction actionWithTitle:@"Copy Link" destructive:NO handler:^{
+        waTrack *current = [waPlayer shared].currentTrack;
+        if (!current.identifier.length) return;
+        NSString *link = [NSString stringWithFormat:@"https://www.deezer.com/track/%@", current.identifier];
+        [[UIPasteboard generalPasteboard] setString:link];
+    }]];
+    [waActions showInView:self.view title:track.title actions:actions];
 }
 
 - (void)refreshLastFMButton {
@@ -1210,14 +1241,19 @@ enum {
     }
     NSString *toggle = fm.scrobblingEnabled ? @"Turn Off Scrobbling" : @"Turn On Scrobbling";
     NSString *title = fm.username.length ? fm.username : @"Last.fm";
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:title
-                                                       delegate:self
-                                              cancelButtonTitle:@"Cancel"
-                                         destructiveButtonTitle:@"Log Out"
-                                              otherButtonTitles:toggle, nil];
-    sheet.tag = waPlayerSheetLastFM;
+    NSMutableArray *actions = [NSMutableArray array];
+    __weak waPlayerController *weakSelf = self;
+    [actions addObject:[waAction actionWithTitle:@"Log Out" destructive:YES handler:^{
+        [[waLastFM shared] logout];
+        [weakSelf refreshLastFMButton];
+    }]];
+    [actions addObject:[waAction actionWithTitle:toggle destructive:NO handler:^{
+        waLastFM *current = [waLastFM shared];
+        [current setScrobblingEnabled:!current.scrobblingEnabled];
+        [weakSelf refreshLastFMButton];
+    }]];
     UIView *host = self.navigationController.view ?: self.view;
-    [sheet showInView:host];
+    [waActions showInView:host title:title actions:actions];
 }
 
 - (void)showLastFMLogin {
@@ -1247,53 +1283,6 @@ enum {
         NSString *message = error.localizedDescription.length ? error.localizedDescription : @"Could not sign in.";
         [[[UIAlertView alloc] initWithTitle:@"Last.fm" message:message delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
     }];
-}
-
-- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
-    if (buttonIndex == actionSheet.cancelButtonIndex) return;
-    if (actionSheet.tag == 7) {
-        waPlayer *player = [waPlayer shared];
-        waCast *cast = [waCast shared];
-        if (buttonIndex == 0) {
-            if (!cast.target) return;
-            [cast clearTarget];
-            [self castChanged];
-            if (player.currentTrack) [player refreshOutput];
-            return;
-        }
-        if (buttonIndex == 1) {
-            BOOL wasCasting = cast.target != nil;
-            if (wasCasting) [cast clearTarget];
-            [self castChanged];
-            if (wasCasting && player.currentTrack) [player refreshOutput];
-            [self showAirPlayPicker];
-            return;
-        }
-        NSArray *devices = cast.devices;
-        NSInteger index = buttonIndex - 2;
-        if (index < 0 || index >= (NSInteger)devices.count) return;
-        waCastDevice *device = [devices objectAtIndex:(NSUInteger)index];
-        if ([device.host isEqualToString:cast.target.host]) return;
-        [cast selectDevice:device];
-        [self castChanged];
-        if (player.currentTrack) [player refreshOutput];
-        return;
-    }
-    if (actionSheet.tag == waPlayerSheetLastFM) {
-        waLastFM *fm = [waLastFM shared];
-        if (buttonIndex == actionSheet.destructiveButtonIndex) [fm logout];
-        else [fm setScrobblingEnabled:!fm.scrobblingEnabled];
-        [self refreshLastFMButton];
-        return;
-    }
-    if (buttonIndex == 0) {
-        if (!self.showingLyrics) [self toggleLyrics];
-    } else if (buttonIndex == 1) {
-        waTrack *track = [waPlayer shared].currentTrack;
-        if (!track.identifier.length) return;
-        NSString *link = [NSString stringWithFormat:@"https://www.deezer.com/track/%@", track.identifier];
-        [[UIPasteboard generalPasteboard] setString:link];
-    }
 }
 
 @end
