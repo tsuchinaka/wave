@@ -20,6 +20,8 @@ static NSString *waEQBandLabel(NSUInteger band) {
 
 @interface waEQGraphView : UIView {
     float _gains[WA_EQ_BANDS];
+    CGPathRef _curve;
+    CGFloat _curveWidth;
 }
 - (void)setGains:(const float *)gains;
 @end
@@ -28,11 +30,42 @@ static NSString *waEQBandLabel(NSUInteger band) {
 
 - (void)setGains:(const float *)gains {
     if (gains) memcpy(_gains, gains, sizeof(_gains));
+    [self buildCurve];
     [self setNeedsDisplay];
+}
+
+// One width-sized DSP sweep, cached as a path. WaEQBuild itself does 64
+// powf + ~2560 trig; the per-column magnitude sweep adds ~11k more. Doing
+// that on every slider pixel used to peg the main thread during a drag.
+- (void)buildCurve {
+    CGFloat width = CGRectGetWidth(self.bounds);
+    if (width < 1.0) return;
+    if (_curve && fabs(_curveWidth - width) < 0.5) return;
+    if (_curve) { CGPathRelease(_curve); _curve = NULL; }
+    CGFloat height = CGRectGetHeight(self.bounds);
+    CGFloat mid = height / 2.0;
+    waEQCoeff coeffs[WA_EQ_BANDS];
+    float preGain = waEQBuild(_gains, 44100.0f, coeffs);
+    float preDB = 20.0f * log10f(preGain > 0.0f ? preGain : 1.0f);
+    CGMutablePathRef path = CGPathCreateMutable();
+    int steps = (int)width;
+    for (int step = 0; step <= steps; step++) {
+        double fraction = steps ? (double)step / (double)steps : 0.0;
+        float freq = 20.0f * powf(1000.0f, (float)fraction);
+        float db = waEQMagnitudeDB(coeffs, 44100.0f, freq) + preDB;
+        if (db > WA_EQ_MAX) db = WA_EQ_MAX;
+        if (db < WA_EQ_MIN) db = WA_EQ_MIN;
+        CGFloat y = mid - (CGFloat)db / WA_EQ_MAX * (mid - 6.0);
+        if (step == 0) CGPathMoveToPoint(path, NULL, 0.0, y);
+        else CGPathAddLineToPoint(path, NULL, (CGFloat)step, y);
+    }
+    _curve = path;
+    _curveWidth = width;
 }
 
 - (id)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
+        self.contentMode = UIViewContentModeRedraw;
         self.backgroundColor = [UIColor whiteColor];
         self.layer.cornerRadius = 8.0;
         self.clipsToBounds = YES;
@@ -62,22 +95,21 @@ static NSString *waEQBandLabel(NSUInteger band) {
 
     CGContextSetLineWidth(ctx, 2.0);
     [[UIColor colorWithRed:0.0 green:0.45 blue:0.85 alpha:1.0] setStroke];
-    waEQCoeff coeffs[WA_EQ_BANDS];
-    float preGain = waEQBuild(_gains, 44100.0f, coeffs);
-    float preDB = 20.0f * log10f(preGain > 0.0f ? preGain : 1.0f);
-    CGContextBeginPath(ctx);
-    int steps = (int)width;
-    for (int step = 0; step <= steps; step++) {
-        double fraction = steps ? (double)step / (double)steps : 0.0;
-        float freq = 20.0f * powf(1000.0f, (float)fraction);
-        float db = waEQMagnitudeDB(coeffs, 44100.0f, freq) + preDB;
-        if (db > WA_EQ_MAX) db = WA_EQ_MAX;
-        if (db < WA_EQ_MIN) db = WA_EQ_MIN;
-        CGFloat y = mid - (CGFloat)db / WA_EQ_MAX * (mid - 6.0);
-        if (step == 0) CGContextMoveToPoint(ctx, 0.0, y);
-        else CGContextAddLineToPoint(ctx, (CGFloat)step, y);
-    }
+    if (_curve) CGContextAddPath(ctx, _curve);
     CGContextStrokePath(ctx);
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat width = CGRectGetWidth(self.bounds);
+    if (_curve && fabs(_curveWidth - width) > 0.5) {
+        [self buildCurve];
+        [self setNeedsDisplay];
+    }
+}
+
+- (void)dealloc {
+    if (_curve) CGPathRelease(_curve);
 }
 
 @end
@@ -263,7 +295,6 @@ static NSString *waEQBandLabel(NSUInteger band) {
         UISlider *bandSlider = [self.sliders objectAtIndex:i];
         gains[i] = roundf(bandSlider.value);
     }
-    [self.graph setGains:gains];
 }
 
 // The audio path and the defaults are touched once the finger lifts. Driving
@@ -274,6 +305,9 @@ static NSString *waEQBandLabel(NSUInteger band) {
     float snapped = roundf(slider.value);
     slider.value = snapped;
     [[waPlayer shared] setGain:snapped forBand:band];
+    float gains[WA_EQ_BANDS];
+    for (NSUInteger i = 0; i < WA_EQ_BANDS; i++) gains[i] = [[waPlayer shared] gainForBand:i];
+    [self.graph setGains:gains];
     [self syncPresetButton];
 }
 
