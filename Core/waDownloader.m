@@ -761,6 +761,11 @@ static NSString * const waDownloadSortKey = @"wave.downloadSort";
         if (download.trackID.length) self.itemByID[download.trackID] = download;
     }
     [self loadCollections];
+    // Folders from the sidecar layout, left empty by the migration.
+    for (NSString *legacy in [NSArray arrayWithObjects:[self metaDirectory], [self lyricsDirectory], nil]) {
+        NSArray *left = [manager contentsOfDirectoryAtPath:legacy error:NULL];
+        if (left && left.count == 0) [manager removeItemAtPath:legacy error:NULL];
+    }
     [self persist];
 }
 
