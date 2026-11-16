@@ -1,6 +1,8 @@
 #import "waQueueController.h"
 #import "waPlayer.h"
 #import "../Skin/waCell.h"
+#import "waActions.h"
+#import "waRowActions.h"
 
 @interface waQueueController ()
 @property (nonatomic, strong) NSArray *tracks;
@@ -159,6 +161,26 @@
     if (source.section != 1 || destination.section != 1) return;
     [[waPlayer shared] moveFrom:(NSUInteger)source.row to:(NSUInteger)destination.row];
     self.tracks = [waPlayer shared].queue ? [waPlayer shared].queue : [NSArray array];
+}
+
+
+- (NSDictionary *)contextMenuForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section != 1) return nil;
+    if (indexPath.row < 0 || indexPath.row >= (NSInteger)self.tracks.count) return nil;
+    waTrack *track = [self.tracks objectAtIndex:(NSUInteger)indexPath.row];
+    NSMutableDictionary *menu = [[waRowActions menuForItem:track tracks:self.tracks presenter:self] mutableCopy];
+    if (!menu) return nil;
+    NSMutableArray *actions = [NSMutableArray arrayWithArray:[menu objectForKey:@"actions"]];
+    waPlayer *player = [waPlayer shared];
+    [actions addObject:[waAction actionWithTitle:@"Play Now" destructive:NO handler:^{
+        [player jumpToIndex:(NSUInteger)indexPath.row];
+    }]];
+    [actions addObject:[waAction actionWithTitle:@"Remove from Queue" destructive:YES handler:^{
+        [player removeAtIndex:(NSUInteger)indexPath.row];
+        [self reloadQueue];
+    }]];
+    [menu setObject:actions forKey:@"actions"];
+    return menu;
 }
 
 @end

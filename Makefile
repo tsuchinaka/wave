@@ -14,7 +14,7 @@ CORE_FILES = Core/waModel.m Core/waCrypto.m Core/waAudioProbe.m Core/waDZAPI.m C
 
 SKIN_FILES = Skin/waSkin.m Skin/waCell.m Skin/waTileView.m Skin/waCarouselView.m Skin/waCoverView.m Skin/waLyricStage.m Skin/waHScrollView.m
 
-UI_FILES = UI/waTableController.m UI/waRootController.m UI/waAppDelegate.m UI/waActions.m \
+UI_FILES = UI/waTableController.m UI/waRootController.m UI/waAppDelegate.m UI/waActions.m UI/waRowActions.m UI/waResultsController.m \
            UI/waHomeController.m UI/waSearchController.m UI/waDetailController.m UI/waLibraryController.m \
            UI/waChartsController.m UI/waRadioController.m UI/waGenresController.m UI/waDiscographyController.m UI/waDownloadsController.m \
            UI/waLoginController.m UI/waProfileController.m UI/waPlayerController.m UI/waQueueController.m \

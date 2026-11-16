@@ -6,6 +6,8 @@
 #import "../Skin/waCell.h"
 #import "../Skin/waCarouselView.h"
 #import "../Skin/waTileView.h"
+#import "waRowActions.h"
+#import "waResultsController.h"
 
 static NSString * const waRecentSearchesKey = @"wave.recentSearches";
 static NSString * const waRecentSearchesLegacyKey = @"waRecentSearches";
@@ -462,10 +464,68 @@ static void waHideSearchBackground(UIView *view) {
     return (NSInteger)self.groups.count;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+// Grouped headers carry the action where it belongs: See All on a preview
+// carousel, Clear on recents. Plain sections keep the stock label look.
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     (void)tableView;
-    NSString *title = [[self groupAt:section] objectForKey:@"title"];
-    return title.length ? title : nil;
+    NSDictionary *group = [self groupAt:section];
+    NSString *title = [group objectForKey:@"title"];
+    NSString *kind = [group objectForKey:@"kind"];
+    BOOL seeAll = [kind isEqualToString:@"carousel"];
+    BOOL clear = [kind isEqualToString:@"recent"];
+    if (!title.length && !seeAll && !clear) return nil;
+    UIView *view = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, CGRectGetWidth(self.tableView.bounds), 32.0)];
+    view.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    view.backgroundColor = [UIColor clearColor];
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(16.0, 6.0, CGRectGetWidth(view.bounds) - 110.0, 22.0)];
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    label.backgroundColor = [UIColor clearColor];
+    label.font = [UIFont boldSystemFontOfSize:16.0];
+    label.textColor = [UIColor colorWithWhite:0.30 alpha:1.0];
+    label.text = title;
+    [view addSubview:label];
+    if (seeAll || clear) {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeRoundedRect];
+        button.frame = CGRectMake(CGRectGetWidth(view.bounds) - 84.0, 3.0, 72.0, 26.0);
+        button.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        button.titleLabel.font = [UIFont systemFontOfSize:12.0];
+        button.tag = section;
+        [button setTitle:seeAll ? @"See All" : @"Clear" forState:UIControlStateNormal];
+        [button addTarget:self action:seeAll ? @selector(seeAll:) : @selector(clearRecents) forControlEvents:UIControlEventTouchUpInside];
+        [view addSubview:button];
+    }
+    return view;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    (void)tableView;
+    NSDictionary *group = [self groupAt:section];
+    NSString *kind = [group objectForKey:@"kind"];
+    if ([kind isEqualToString:@"carousel"] || [kind isEqualToString:@"recent"]) return 32.0;
+    return [[[group objectForKey:@"title"] description] length] ? 32.0 : 0.0;
+}
+
+- (void)clearRecents {
+    self.recents = [NSArray array];
+    [self storeRecents];
+    [self rebuildGroups];
+    if (!self.groups.count) {
+        [self presentIdle];
+        return;
+    }
+    [self.tableView reloadData];
+}
+
+- (void)seeAll:(UIButton *)button {
+    NSDictionary *group = [self groupAt:button.tag];
+    NSArray *items = [group objectForKey:@"items"];
+    id first = items.count ? [items objectAtIndex:0] : nil;
+    waSearchKind kind = waSearchAlbums;
+    if ([first isKindOfClass:[waArtist class]]) kind = waSearchArtists;
+    else if ([first isKindOfClass:[waPlaylist class]]) kind = waSearchPlaylists;
+    NSString *title = [group objectForKey:@"title"];
+    waResultsController *results = [[waResultsController alloc] initWithQuery:self.activeQuery kind:kind title:title];
+    [self.navigationController pushViewController:results animated:YES];
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -596,6 +656,19 @@ static void waHideSearchBackground(UIView *view) {
     }
     cell.indexText = nil;
     return cell;
+}
+
+- (NSDictionary *)contextMenuForRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSDictionary *group = [self groupAt:indexPath.section];
+    NSString *kind = [group objectForKey:@"kind"];
+    if ([kind isEqualToString:@"carousel"] || [kind isEqualToString:@"query"] || [kind isEqualToString:@"recent"]) return nil;
+    NSArray *items = [group objectForKey:@"items"];
+    if (indexPath.row < 0 || indexPath.row >= (NSInteger)items.count) return nil;
+    id item = [items objectAtIndex:(NSUInteger)indexPath.row];
+    NSArray *tracks = nil;
+    if ([kind isEqualToString:@"track"]) tracks = self.tracks;
+    else if ([kind isEqualToString:@"item"] && [item isKindOfClass:[waTrack class]]) tracks = self.suggestTracks;
+    return [waRowActions menuForItem:item tracks:tracks presenter:self];
 }
 
 - (void)carouselTapped:(waTileView *)tile {

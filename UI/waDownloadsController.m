@@ -5,6 +5,8 @@
 #import "waSession.h"
 #import "waDetailController.h"
 #import "../Skin/waCell.h"
+#import "waActions.h"
+#import "waRowActions.h"
 
 static NSString *waByteString(unsigned long long bytes) {
     if (bytes < 1024ULL) return [NSString stringWithFormat:@"%llu B", bytes];
@@ -296,6 +298,33 @@ static NSString *waStateText(waDownload *download) {
     if (!tracks.count) return;
     [[waPlayer shared] playTracks:tracks startAt:start context:@"Downloads"];
     [[waRootController shared] showPlayer];
+}
+
+
+- (NSDictionary *)contextMenuForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section != 0 && indexPath.section != 3) return nil;
+    waDownload *download = [self downloadAtIndexPath:indexPath];
+    if (!download) return nil;
+    waTrack *track = download.track;
+    if (download.state == waDownloadCompleted && track) {
+        NSMutableDictionary *menu = [[waRowActions menuForItem:track tracks:nil presenter:self] mutableCopy];
+        if (!menu) return nil;
+        NSMutableArray *actions = [NSMutableArray arrayWithArray:[menu objectForKey:@"actions"]];
+        [actions addObject:[waAction actionWithTitle:@"Remove Download" destructive:YES handler:^{
+            [[waDownloader shared] removeDownload:download];
+        }]];
+        [menu setObject:actions forKey:@"actions"];
+        return menu;
+    }
+    waDownloader *downloader = [waDownloader shared];
+    BOOL active = download.state != waDownloadCompleted;
+    return [NSDictionary dictionaryWithObjectsAndKeys:
+            track.title.length ? track.title : @"Download", @"title",
+            [NSArray arrayWithObject:[waAction actionWithTitle:active ? @"Cancel Download" : @"Retry Download" destructive:active handler:^{
+                if (active) [downloader cancelDownload:download];
+                else [downloader retryDownload:download];
+            }]], @"actions",
+            nil];
 }
 
 @end

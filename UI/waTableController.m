@@ -1,6 +1,7 @@
 #import "waTableController.h"
 #import "waCell.h"
 #import "waRootController.h"
+#import "waActions.h"
 
 @interface waPaddedView : UIView
 @property (nonatomic, assign) CGFloat bottomPad;
@@ -77,6 +78,32 @@
         [bar setBackgroundImage:nil forBarMetrics:UIBarMetricsDefault];
     }
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applyMiniPlayerLayout) name:waMiniPlayerLayoutDidChangeNotification object:nil];
+    UILongPressGestureRecognizer *hold = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(rowHeld:)];
+    hold.minimumPressDuration = 0.4;
+    [self.tableView addGestureRecognizer:hold];
+}
+
+- (NSDictionary *)contextMenuForRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)indexPath;
+    return nil;
+}
+
+- (void)rowHeld:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state != UIGestureRecognizerStateBegan) return;
+    if (self.tableView.editing || self.editing) return;
+    if ([waActions isShowingInView:self.view]) return;
+    CGPoint point = [gesture locationInView:self.tableView];
+    NSIndexPath *path = [self.tableView indexPathForRowAtPoint:point];
+    if (!path) return;
+    NSDictionary *menu = [self contextMenuForRowAtIndexPath:path];
+    NSArray *actions = [menu objectForKey:@"actions"];
+    if (![actions isKindOfClass:[NSArray class]] || !actions.count) return;
+    NSString *title = [menu objectForKey:@"title"];
+    // Present on the next turn so the gesture is not still active when the
+    // sheet takes the view.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [waActions showInView:self.view title:[title isKindOfClass:[NSString class]] ? title : nil actions:actions];
+    });
 }
 
 - (void)dealloc {

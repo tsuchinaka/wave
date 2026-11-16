@@ -5,6 +5,7 @@
 #import "waDiscographyController.h"
 #import "../Core/waDownloader.h"
 #import "../Skin/waCell.h"
+#import "waRowActions.h"
 #import <QuartzCore/QuartzCore.h>
 
 typedef enum {
@@ -729,6 +730,14 @@ typedef enum {
         [strongSelf.tableView deleteRowsAtIndexPaths:[NSArray arrayWithObject:indexPath] withRowAnimation:UITableViewRowAnimationFade];
         [strongSelf applyHeader];
     }];
+}
+
+
+- (NSDictionary *)contextMenuForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.editing) return nil;
+    waTrack *track = [self trackAtIndexPath:indexPath];
+    if (!track) return nil;
+    return [waRowActions menuForItem:track tracks:self.tracks presenter:self];
 }
 
 @end

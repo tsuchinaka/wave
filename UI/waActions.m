@@ -1,4 +1,5 @@
 #import "waActions.h"
+#import "../Core/waCrash.h"
 
 @implementation waAction
 
@@ -66,6 +67,7 @@ static NSMutableSet *waLivePresenters(void) {
 + (void)presentInView:(UIView *)view item:(UIBarButtonItem *)item title:(NSString *)title actions:(NSArray *)actions {
     if (!view || !actions.count) return;
     if ([self isShowingInView:view]) return;
+    [waCrash markScreen:NSStringFromClass([view class]) action:title.length ? title : @"menu"];
 
     // Button order is the action order, so the index the sheet reports maps
     // straight back. Filter first, never inside the loop.

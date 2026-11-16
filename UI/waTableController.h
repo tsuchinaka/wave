@@ -27,4 +27,8 @@ typedef enum {
 - (void)setLoading:(BOOL)loading;
 - (void)showEmpty:(NSString *)title message:(NSString *)message;
 - (void)showError:(NSError *)error retry:(SEL)retry;
+// Return { title: NSString, actions: NSArray of waAction } for a held row.
+// The base class owns the gesture and the presenter; screens only supply the
+// menu for the item at that index path. Nil means no menu on that row.
+- (NSDictionary *)contextMenuForRowAtIndexPath:(NSIndexPath *)indexPath;
 @end

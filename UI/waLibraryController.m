@@ -6,6 +6,8 @@
 #import "waDownloadsController.h"
 #import "waDownloader.h"
 #import "../Skin/waCell.h"
+#import "waActions.h"
+#import "waRowActions.h"
 
 enum {
     waLibrarySegmentSongs = 0,
@@ -363,6 +365,28 @@ enum {
     } else if (segment == waLibrarySegmentPlaylists && [item isKindOfClass:[waPlaylist class]]) {
         [self.navigationController pushViewController:[[waDetailController alloc] initWithPlaylist:(waPlaylist *)item] animated:YES];
     }
+}
+
+- (NSDictionary *)contextMenuForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0) return nil;
+    NSArray *list = [self showingPlaylists] ? [self playlistsInSection:indexPath.section] : self.items;
+    if (indexPath.row < 0 || indexPath.row >= (NSInteger)list.count) return nil;
+    id item = [list objectAtIndex:(NSUInteger)indexPath.row];
+    NSArray *tracks = ([self currentSegment] == waLibrarySegmentSongs) ? self.items : nil;
+    NSMutableDictionary *menu = [[waRowActions menuForItem:item tracks:tracks presenter:self] mutableCopy];
+    if (!menu) return nil;
+    if ([self showingPlaylists] && [self playlistIsMine:item]) {
+        waPlaylist *playlist = (waPlaylist *)item;
+        NSMutableArray *actions = [NSMutableArray arrayWithArray:[menu objectForKey:@"actions"]];
+        [actions addObject:[waAction actionWithTitle:@"Delete Playlist" destructive:YES handler:^{
+            [[waSession shared] deletePlaylist:playlist completion:^(BOOL ok, NSError *error) {
+                (void)error;
+                if (ok) [self reload];
+            }];
+        }]];
+        [menu setObject:actions forKey:@"actions"];
+    }
+    return menu;
 }
 
 - (void)createPlaylist {
