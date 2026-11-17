@@ -2,6 +2,73 @@
 #import "waSkin.h"
 #import "waSession.h"
 
+// 0 single, 1 top, 2 middle, 3 bottom. Same slices UIKit uses for a group.
+@interface waGroupedFill : UIView
+@property (nonatomic, assign) NSInteger position;
+@end
+
+@implementation waGroupedFill
+
+- (id)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+        self.contentMode = UIViewContentModeRedraw;
+        _position = -1;
+    }
+    return self;
+}
+
+- (void)setPosition:(NSInteger)position {
+    if (_position == position) return;
+    _position = position;
+    [self setNeedsDisplay];
+}
+
+- (void)drawRect:(CGRect)rect {
+    (void)rect;
+    CGRect box = CGRectInset(self.bounds, 0.5, 0.5);
+    if (box.size.width < 2.0 || box.size.height < 2.0) return;
+    BOOL top = (self.position == 0 || self.position == 1);
+    BOOL bottom = (self.position == 0 || self.position == 3);
+    CGFloat radius = 10.0;
+    if (box.size.height < radius * 2.0) radius = floor(box.size.height / 2.0);
+    CGFloat minX = CGRectGetMinX(box), maxX = CGRectGetMaxX(box);
+    CGFloat minY = CGRectGetMinY(box), maxY = CGRectGetMaxY(box);
+    UIBezierPath *path = [UIBezierPath bezierPath];
+    [path moveToPoint:CGPointMake(minX + (top ? radius : 0.0), minY)];
+    [path addLineToPoint:CGPointMake(maxX - (top ? radius : 0.0), minY)];
+    if (top) [path addArcWithCenter:CGPointMake(maxX - radius, minY + radius) radius:radius startAngle:(CGFloat)-M_PI_2 endAngle:0 clockwise:YES];
+    else [path addLineToPoint:CGPointMake(maxX, minY)];
+    [path addLineToPoint:CGPointMake(maxX, maxY - (bottom ? radius : 0.0))];
+    if (bottom) [path addArcWithCenter:CGPointMake(maxX - radius, maxY - radius) radius:radius startAngle:0 endAngle:(CGFloat)M_PI_2 clockwise:YES];
+    else [path addLineToPoint:CGPointMake(maxX, maxY)];
+    [path addLineToPoint:CGPointMake(minX + (bottom ? radius : 0.0), maxY)];
+    if (bottom) [path addArcWithCenter:CGPointMake(minX + radius, maxY - radius) radius:radius startAngle:(CGFloat)M_PI_2 endAngle:(CGFloat)M_PI clockwise:YES];
+    else [path addLineToPoint:CGPointMake(minX, maxY)];
+    [path addLineToPoint:CGPointMake(minX, minY + (top ? radius : 0.0))];
+    if (top) [path addArcWithCenter:CGPointMake(minX + radius, minY + radius) radius:radius startAngle:(CGFloat)M_PI endAngle:(CGFloat)-M_PI_2 clockwise:YES];
+    else [path addLineToPoint:CGPointMake(minX, minY)];
+    [path closePath];
+    [[UIColor whiteColor] setFill];
+    [path fill];
+    [[UIColor colorWithWhite:0.70 alpha:1.0] setStroke];
+    path.lineWidth = 1.0;
+    if (self.position == 2) {
+        UIBezierPath *sides = [UIBezierPath bezierPath];
+        [sides moveToPoint:CGPointMake(minX, minY)];
+        [sides addLineToPoint:CGPointMake(minX, maxY)];
+        [sides moveToPoint:CGPointMake(maxX, minY)];
+        [sides addLineToPoint:CGPointMake(maxX, maxY)];
+        sides.lineWidth = 1.0;
+        [sides stroke];
+    } else {
+        [path stroke];
+    }
+}
+
+@end
+
 @interface waCell ()
 @property (nonatomic, strong) UIImageView *explicitView;
 @property (nonatomic, strong) UILabel *downloadedView;
@@ -12,6 +79,27 @@
 @end
 
 @implementation waCell
+
++ (void)applyGroupedBackground:(UITableViewCell *)cell rows:(NSInteger)rows row:(NSInteger)row {
+    if (!cell) return;
+    NSInteger position = 0;
+    if (rows > 1) {
+        if (row <= 0) position = 1;
+        else if (row >= rows - 1) position = 3;
+        else position = 2;
+    }
+    waGroupedFill *fill = (waGroupedFill *)cell.backgroundView;
+    if (![fill isKindOfClass:[waGroupedFill class]]) {
+        fill = [[waGroupedFill alloc] initWithFrame:cell.bounds];
+        fill.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        cell.backgroundView = fill;
+    }
+    fill.frame = cell.bounds;
+    fill.position = position;
+    // The layer must not paint a square behind the rounded path.
+    cell.backgroundColor = [UIColor clearColor];
+    cell.opaque = NO;
+}
 
 + (waCell *)cellForTable:(UITableView *)table {
     return [self cellForTable:table subtitle:NO];
@@ -93,9 +181,6 @@
     [super layoutSubviews];
     // super puts the labels back at the stock inset on every pass. Skipping
     // this when the size matches leaves the title under the artwork.
-    // Clear only once the table has installed the rounded background view,
-    // so the white of the cell does not square off its corners.
-    if (self.backgroundView) self.backgroundColor = [UIColor clearColor];
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
     CGFloat height = CGRectGetHeight(self.contentView.bounds);
     BOOL hasArt = (self.artworkView.image != nil) || (self.expectedArtworkURL.length > 0);

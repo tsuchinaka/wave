@@ -171,7 +171,8 @@
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    (void)tableView; (void)indexPath;
+    NSInteger rows = [self tableView:tableView numberOfRowsInSection:indexPath.section];
+    [waCell applyGroupedBackground:cell rows:rows row:indexPath.row];
     waCoverGrid *grid = (waCoverGrid *)[cell.contentView viewWithTag:610];
     if (grid) grid.frame = cell.contentView.bounds;
 }
@@ -389,7 +390,7 @@
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    (void)tableView;
+    [super tableView:tableView willDisplayCell:cell forRowAtIndexPath:indexPath];
     if (indexPath.row == 1) {
         cell.textLabel.textColor = [waChrome linkBlue];
         return;

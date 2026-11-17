@@ -18,6 +18,9 @@
 @property (nonatomic, assign) BOOL downloadedMark;
 - (void)setDownloaded:(BOOL)downloaded;
 - (void)loadArtworkForURL:(NSString *)url size:(CGSize)size;
+// Grouped tables on iOS 5 drop their rounded fill if the cell's background
+// color is touched. This draws that fill and installs it as backgroundView.
++ (void)applyGroupedBackground:(UITableViewCell *)cell rows:(NSInteger)rows row:(NSInteger)row;
 @end
 
 @interface waSectionHeader : UIView

@@ -180,6 +180,12 @@
     return [waCell cellForTable:tableView];
 }
 
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (!self.grouped) return;
+    NSInteger rows = [self tableView:tableView numberOfRowsInSection:indexPath.section];
+    [waCell applyGroupedBackground:cell rows:rows row:indexPath.row];
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 }

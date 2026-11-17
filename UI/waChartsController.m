@@ -187,7 +187,7 @@
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    (void)tableView; (void)indexPath;
+    [super tableView:tableView willDisplayCell:cell forRowAtIndexPath:indexPath];
     waCoverGrid *grid = (waCoverGrid *)[cell.contentView viewWithTag:810];
     if (grid) grid.frame = cell.contentView.bounds;
 }

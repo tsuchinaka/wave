@@ -3,6 +3,7 @@
 #import "waDetailController.h"
 #import "waRootController.h"
 #import "../Skin/waCoverView.h"
+#import "../Skin/waCell.h"
 
 @interface waGenreArtistsController : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, copy) NSString *genreID;
@@ -127,7 +128,8 @@
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    (void)tableView; (void)indexPath;
+    NSInteger rows = [self tableView:tableView numberOfRowsInSection:indexPath.section];
+    [waCell applyGroupedBackground:cell rows:rows row:indexPath.row];
     waCoverGrid *grid = (waCoverGrid *)[cell.contentView viewWithTag:820];
     if (grid) grid.frame = cell.contentView.bounds;
 }

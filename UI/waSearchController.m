@@ -548,7 +548,7 @@ static UITextField *waSearchField(UIView *view) {
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
-    (void)tableView;
+    [super tableView:tableView willDisplayCell:cell forRowAtIndexPath:indexPath];
     NSDictionary *group = [self groupAt:indexPath.section];
     if (![[[group objectForKey:@"kind"] description] isEqualToString:@"carousel"]) return;
     cell.clipsToBounds = YES;
