@@ -105,6 +105,7 @@ typedef struct {
     float sampleRate;
     BOOL active;
     BOOL limiter;
+    unsigned liveMask;
     waLimiter level;
 } waEQState;
 
@@ -491,6 +492,11 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
 
 - (void)pumpNext:(NSUInteger)generation {
     if (generation != _nextPumpGeneration || !_nextInput) return;
+    double sr = _format.mSampleRate > 0 ? _format.mSampleRate : 44100.0;
+    if (_opened && _running && waRingCount(&_ring) < (size_t)sr) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), _nextDecodeQueue, ^{ [self pumpNext:generation]; });
+        return;
+    }
     const size_t chunkFrames = 1024;
     AudioStreamBasicDescription nf = [_nextInput format];
     size_t bytesPerFrame = nf.mBytesPerFrame;
@@ -595,6 +601,8 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
 
     if (generation != _pumpGeneration) return;
 
+    double sr = _format.mSampleRate > 0 ? _format.mSampleRate : 44100.0;
+    size_t lowWater = (size_t)sr;
     if (waRingCount(&_ring) > _ring.capacity - chunkFrames) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), _decodeQueue, ^{ [self pumpStep:generation]; });
         return;
@@ -602,25 +610,35 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
 
     void *scratch = _pumpScratch;
     float *floats = _pumpFloats;
-    int moved = [_input shiftBytes:chunkFrames * bytesPerFrame buffer:scratch];
-    if (moved <= 0) {
-        if (_input.endOfInput) {
-            if (!_finished) [[waLog shared] log:@"decode end of stream"];
-            _finished = YES;
-        } else {
+    BOOL stalled = NO;
+    // Under a second buffered, drain what the decoder already has. The 12 ms
+    // pause is only for a healthy ring; waiting it while empty is an underrun.
+    int budget = waRingCount(&_ring) < lowWater ? 16 : 1;
+    for (int pull = 0; pull < budget; pull++) {
+        if (generation != _pumpGeneration || !_running) return;
+        if (waRingCount(&_ring) > _ring.capacity - chunkFrames) break;
+        int moved = [_input shiftBytes:chunkFrames * bytesPerFrame buffer:scratch];
+        BOOL waited = NO;
+        if (moved <= 0) {
+            if (_input.endOfInput) {
+                if (!_finished) [[waLog shared] log:@"decode end of stream"];
+                _finished = YES;
+                break;
+            }
             [_input process];
             moved = [_input shiftBytes:chunkFrames * bytesPerFrame buffer:scratch];
+            waited = YES;
+            if (moved <= 0) { stalled = YES; break; }
         }
-    }
-    if (moved > 0) {
         size_t frames = (size_t)moved / bytesPerFrame;
         [self convertScratch:scratch frames:frames toFloat:floats format:_format];
         size_t written = 0;
         while (written < frames && generation == _pumpGeneration && _running) {
             size_t wrote = waRingWrite(&_ring, floats + written * 2, frames - written);
-            if (!wrote) { [NSThread sleepForTimeInterval:0.02]; continue; }
+            if (!wrote) { [NSThread sleepForTimeInterval:0.01]; continue; }
             written += wrote;
         }
+        if (waited) break;
     }
 
     if (_finished && waRingCount(&_ring) == 0 && !_nextOpened) {
@@ -630,7 +648,14 @@ static void waAudioQueueCallback(void *user, AudioQueueRef queue, AudioQueueBuff
         [self maybeFinish];
         return;
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.012 * NSEC_PER_SEC)), _decodeQueue, ^{ [self pumpStep:generation]; });
+    size_t after = waRingCount(&_ring);
+    if (stalled) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.008 * NSEC_PER_SEC)), _decodeQueue, ^{ [self pumpStep:generation]; });
+    } else if (after < lowWater) {
+        dispatch_async(_decodeQueue, ^{ [self pumpStep:generation]; });
+    } else {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.012 * NSEC_PER_SEC)), _decodeQueue, ^{ [self pumpStep:generation]; });
+    }
 }
 
 - (void)convertScratch:(void *)scratch frames:(size_t)frames toFloat:(float *)out format:(AudioStreamBasicDescription)format {
@@ -879,8 +904,12 @@ static void waHighpass(waBiquad *filter, float freq, float sr) {
     }
     if (resetState) [self resetLimiter];
     BOOL active = NO;
+    unsigned live = 0;
     for (int band = 0; band < WA_EQ_BANDS; band++) {
-        if (fabsf(_eq.gains[band]) > 0.05f) active = YES;
+        if (fabsf(_eq.gains[band]) > 0.05f) {
+            active = YES;
+            live |= 1u << band;
+        }
         for (int ch = 0; ch < 2; ch++) {
             waBiquad *filter = &_eq.bands[band][ch];
             filter->b0 = coeffs[band].b0;
@@ -892,6 +921,7 @@ static void waHighpass(waBiquad *filter, float freq, float sr) {
         }
     }
     _eq.active = active;
+    _eq.liveMask = live;
 }
 
 - (void)rebuildEQ {
@@ -912,6 +942,17 @@ static void waHighpass(waBiquad *filter, float freq, float sr) {
 
 - (void)setLimiterEnabled:(BOOL)enabled {
     _eq.limiter = enabled;
+}
+
+// Subnormal floats stall the VFP for microseconds. One core, so that stall
+// is a missed audio deadline. Flush-to-zero is per thread.
+static void waKillDenormals(void) {
+#if defined(__arm__)
+    unsigned int fpscr;
+    __asm__ volatile("vmrs %0, fpscr" : "=r"(fpscr));
+    fpscr |= (1u << 24);
+    __asm__ volatile("vmsr fpscr, %0" : : "r"(fpscr));
+#endif
 }
 
 static inline float waProcessBiquad(waBiquad *q, float x) {
@@ -950,8 +991,10 @@ static inline float waSoftCeiling(float x) {
         float right = samples[i * 2 + 1] * _eq.preGain;
         left = waProcessBiquad(&_eq.highpass[0], left);
         right = waProcessBiquad(&_eq.highpass[1], right);
-        if (_eq.active) {
+        unsigned live = _eq.liveMask;
+        if (live) {
             for (int band = 0; band < WA_EQ_BANDS; band++) {
+                if ((live & (1u << band)) == 0) continue;
                 left = waProcessBiquad(&_eq.bands[band][0], left);
                 right = waProcessBiquad(&_eq.bands[band][1], right);
             }
@@ -974,8 +1017,10 @@ static inline float waSoftCeiling(float x) {
             lim->delay[0][lim->index] = left;
             lim->delay[1][lim->index] = right;
             lim->index = (lim->index + 1) % WA_LIMIT_LOOKAHEAD;
-            left = waSoftCeiling(delayedL * lim->gain);
-            right = waSoftCeiling(delayedR * lim->gain);
+            float outL = delayedL * lim->gain;
+            float outR = delayedR * lim->gain;
+            left = fabsf(outL) > 1.0f ? waSoftCeiling(outL) : outL;
+            right = fabsf(outR) > 1.0f ? waSoftCeiling(outR) : outR;
         } else {
             // Without the limiter there is no lookahead delay, so the output
             // is still the current sample.
@@ -988,6 +1033,7 @@ static inline float waSoftCeiling(float x) {
 }
 
 - (void)renderInto:(AudioQueueBufferRef)buffer {
+    waKillDenormals();
     pthread_mutex_lock(&_renderLock);
     size_t frames = buffer->mAudioDataBytesCapacity / 8;
     if (frames > WA_QUEUE_FRAMES) frames = WA_QUEUE_FRAMES;

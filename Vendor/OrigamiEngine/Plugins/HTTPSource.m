@@ -111,6 +111,25 @@ static void waTrimStreamCache(void) {
 @property (copy, nonatomic) NSString *cachePath;
 @end
 
+// Caller owns the returned buffer (+1). The tail under one stripe stays in
+// *remainder. Copying the whole packet out and then sliding the tail was a
+// second trip through the same bytes on the core the decoder is waiting for.
+static NSData *waDetachDecrypted(NSMutableData **remainder, long consumed) {
+    NSMutableData *buf = remainder ? *remainder : nil;
+    NSUInteger length = buf ? [buf length] : 0;
+    if (!buf || consumed <= 0 || (NSUInteger)consumed > length) return nil;
+    if ((NSUInteger)consumed < length) {
+        NSUInteger tail = length - (NSUInteger)consumed;
+        const unsigned char *raw = [buf bytes];
+        NSMutableData *keep = [[NSMutableData alloc] initWithBytes:raw + (NSUInteger)consumed length:tail];
+        [buf setLength:(NSUInteger)consumed];
+        *remainder = keep;
+    } else {
+        *remainder = [[NSMutableData alloc] init];
+    }
+    return buf;
+}
+
 @implementation HTTPSource
 
 const NSTimeInterval readTimeout = 1.0;
@@ -130,6 +149,9 @@ const NSTimeInterval readTimeout = 1.0;
 
 + (void)wa_networkThreadMain {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    // Decode and the audio callback have to win. This thread only decrypts
+    // and writes; at the default priority it takes the core they need.
+    [NSThread setThreadPriority:0.3];
     NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
     // Keep the runloop alive so scheduled connections always fire here.
     [runLoop addPort:[NSMachPort port] forMode:NSDefaultRunLoopMode];
@@ -549,6 +571,7 @@ const NSTimeInterval readTimeout = 1.0;
         }
         NSFileHandle *fileHandle = [_fileHandle retain];
         NSData *payload = data;
+        NSData *owned = nil;
         if (_deezerDecrypt) {
             if (!_deezerCryptor) {
                 _invalidResponse = YES;
@@ -576,8 +599,8 @@ const NSTimeInterval readTimeout = 1.0;
                 return;
             }
             if (!consumed) { [fileHandle release]; return; }
-            payload = [NSData dataWithBytes:bytes length:(NSUInteger)consumed];
-            [_decryptRemainder replaceBytesInRange:NSMakeRange(0, (NSUInteger)consumed) withBytes:NULL length:0];
+            owned = waDetachDecrypted(&_decryptRemainder, consumed);
+            payload = owned;
             _decryptOffset += consumed;
         }
         dispatch_async(_writeQueue, ^{
@@ -591,6 +614,7 @@ const NSTimeInterval readTimeout = 1.0;
             }
             [fileHandle release];
         });
+        [owned release];
     }
 }
 
@@ -604,19 +628,19 @@ const NSTimeInterval readTimeout = 1.0;
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection {
     (void)connection;
     if (_deezerDecrypt && [_decryptRemainder length]) {
-        NSUInteger rest = [_decryptRemainder length];
-        unsigned char *buf = [_decryptRemainder mutableBytes];
+        NSMutableData *tail = _decryptRemainder;
+        NSUInteger rest = [tail length];
+        unsigned char *buf = [tail mutableBytes];
         unsigned long chunkIndex = (unsigned long)(_decryptOffset / WA_STRIPE);
         if (!_deezerCryptor || waCryptorStripe(_deezerCryptor, chunkIndex, buf, rest) != 0) {
             [[waLog shared] log:@"HTTPSource deezer decrypt failed at tail chunk %lu", chunkIndex];
             _invalidResponse = YES;
             _connectionDidFail = YES;
-            [_decryptRemainder setLength:0];
+            [tail setLength:0];
             dispatch_semaphore_signal(_downloadingSemaphore);
             return;
         }
-        NSData *tail = [NSData dataWithBytes:buf length:rest];
-        [_decryptRemainder setLength:0];
+        _decryptRemainder = [[NSMutableData alloc] init];
         NSFileHandle *fh = [_fileHandle retain];
         dispatch_sync(_writeQueue, ^{
             @synchronized(fh) {
@@ -626,6 +650,7 @@ const NSTimeInterval readTimeout = 1.0;
             _byteCount += tail.length;
         });
         [fh release];
+        [tail release];
         _decryptOffset += rest;
     }
     // Normal EOF: unblock any pending read and snap an unknown length to

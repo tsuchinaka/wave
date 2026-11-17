@@ -1,6 +1,7 @@
 #include "waCrypto.h"
 #include <CommonCrypto/CommonCryptor.h>
 #include <CommonCrypto/CommonDigest.h>
+#include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -141,6 +142,9 @@ long waCryptorConsume(waCryptor *c, unsigned long *index, uint8_t *data, size_t 
         }
         consumed += WA_STRIPE;
         (*index)++;
+        // Blowfish on a stripe is enough to miss an audio deadline on one
+        // core. Yield only after a stripe that was actually decrypted.
+        if ((current % 3) == 0) sched_yield();
     }
     return (long)consumed;
 }
