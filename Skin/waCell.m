@@ -33,10 +33,12 @@
 
 - (id)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
-        self.backgroundColor = [UIColor whiteColor];
-        self.opaque = YES;
-        self.contentView.backgroundColor = [UIColor whiteColor];
-        self.contentView.opaque = YES;
+        // Grouped cells draw their own rounded fill. A white opaque background
+        // here is a square that sticks out past those corners.
+        self.backgroundColor = [UIColor clearColor];
+        self.opaque = NO;
+        self.contentView.backgroundColor = [UIColor clearColor];
+        self.contentView.opaque = NO;
         self.textLabel.backgroundColor = [UIColor clearColor];
         self.detailTextLabel.backgroundColor = [UIColor clearColor];
         [waSkin applyPlainCellFonts:self];
