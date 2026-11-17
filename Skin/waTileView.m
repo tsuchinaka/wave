@@ -43,6 +43,10 @@
     return self;
 }
 
+- (void)dealloc {
+    [[waSession shared] cancelArtworkForOwner:self];
+}
+
 - (void)configureWithItem:(waItem *)item {
     BOOL same = (_item == item && self.artworkView.image != nil);
     if (!same) [[waSession shared] cancelArtworkForOwner:self];

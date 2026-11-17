@@ -187,21 +187,21 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
     BOOL a5 = (ncpu >= 2);
 
     if (threeGS) {
-        *net = 4;
+        *net = 2;
         *decode = 1;
-        *memory = 64;
+        *memory = 32;
         self.maxPixel = 256;
         self.diskCap = 16ULL * 1024ULL * 1024ULL;
     } else if (a5) {
-        *net = 6;
-        *decode = 2;
+        *net = 3;
+        *decode = 1;
         *memory = 160;
         self.maxPixel = 640;
         self.diskCap = 48ULL * 1024ULL * 1024ULL;
     } else {
-        *net = 4;
-        *decode = 2;
-        *memory = 96;
+        *net = 2;
+        *decode = 1;
+        *memory = 48;
         self.maxPixel = 512;
         self.diskCap = 24ULL * 1024ULL * 1024ULL;
     }
@@ -216,7 +216,7 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
 
         _memory = [[NSCache alloc] init];
         _memory.countLimit = memory * 3;
-        _memory.totalCostLimit = 8ULL * 1024ULL * 1024ULL;
+        _memory.totalCostLimit = 4ULL * 1024ULL * 1024ULL;
         _jobs = [[NSMutableDictionary alloc] init];
 
         _networkQueue = [[NSOperationQueue alloc] init];
@@ -392,6 +392,13 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
         if (!strongSelf) return;
         NSArray *waiters = [job.waiters copy];
         [strongSelf.jobs removeObjectForKey:job.key.length ? job.key : job.url];
+        BOOL wanted = NO;
+        for (waImageWaiter *waiter in waiters) {
+            if (!waiter.cancelled) { wanted = YES; break; }
+        }
+        // The view already left. Decoding anyway is what kept the CPU busy
+        // and the bitmaps alive after Search or an artist was popped.
+        if (!wanted) return;
         if (!data.length) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 for (waImageWaiter *waiter in waiters) {
@@ -415,6 +422,11 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
         [byPixel enumerateKeysAndObjectsUsingBlock:^(NSNumber *key, NSArray *group, BOOL *stop) {
             (void)stop;
             [strongSelf.decodeQueue addOperationWithBlock:^{
+                BOOL stillWanted = NO;
+                for (waImageWaiter *waiter in group) {
+                    if (!waiter.cancelled) { stillWanted = YES; break; }
+                }
+                if (!stillWanted) return;
                 NSInteger pixel = [key integerValue];
                 UIImage *image = waDecodeJPEG(data, pixel, scale);
                 if (image) {

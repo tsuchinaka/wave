@@ -170,6 +170,10 @@
     self.badgeLabel.frame = CGRectMake(width - durationW - 6.0, 0.0, durationW, height);
 }
 
+- (void)dealloc {
+    [[waSession shared] cancelArtworkForOwner:self];
+}
+
 - (void)prepareForReuse {
     [super prepareForReuse];
     [[waSession shared] cancelArtworkForOwner:self];

@@ -88,27 +88,40 @@ static UIImage *waCoverShadow(CGFloat side) {
     return img;
 }
 
-static UIImage *waReflection(UIImage *image, CGFloat height, CGFloat scale) {
-    if (!image || height < 1.0) return nil;
-    CGSize size = image.size;
-    if (size.width < 1.0 || size.height < 1.0) return nil;
+// Pure CoreGraphics. UIImage draw and UIGraphics on a background thread take
+// UIKit's lock and leak contexts on iOS 5; a scrolling strip used to queue
+// dozens of those at once and the phone stayed wedged after the view was gone.
+static CGImageRef waReflectionImage(CGImageRef source, CGFloat width, CGFloat imageHeight, CGFloat height, CGFloat scale) {
+    if (!source || width < 1.0 || imageHeight < 1.0 || height < 1.0) return NULL;
     if (scale < 1.0) scale = 1.0;
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size.width, height), NO, scale);
-    CGContextRef ctx = UIGraphicsGetCurrentContext();
-    CGContextTranslateCTM(ctx, 0.0, height);
-    CGContextScaleCTM(ctx, 1.0, -1.0);
-    [image drawInRect:CGRectMake(0.0, height - size.height, size.width, size.height)];
+    size_t w = (size_t)(width * scale);
+    size_t h = (size_t)(height * scale);
+    if (w < 1 || h < 1) return NULL;
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, w * 4, space, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(space);
+    if (!ctx) return NULL;
+    CGContextTranslateCTM(ctx, 0.0, (CGFloat)h);
+    CGContextScaleCTM(ctx, scale, -scale);
+    CGContextDrawImage(ctx, CGRectMake(0.0, height - imageHeight, width, imageHeight), source);
     CGContextSetBlendMode(ctx, kCGBlendModeDestinationIn);
-    CGColorSpaceRef space = CGColorSpaceCreateDeviceGray();
+    CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
     CGFloat comps[] = {1.0, 0.42, 1.0, 0.08, 1.0, 0.0};
     CGFloat stops[] = {0.0, 0.32, 1.0};
-    CGGradientRef fade = CGGradientCreateWithColorComponents(space, comps, stops, 3);
+    CGGradientRef fade = CGGradientCreateWithColorComponents(gray, comps, stops, 3);
     CGContextDrawLinearGradient(ctx, fade, CGPointMake(0.0, height), CGPointMake(0.0, 0.0), 0);
     CGGradientRelease(fade);
-    CGColorSpaceRelease(space);
-    UIImage *out = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return out;
+    CGColorSpaceRelease(gray);
+    CGImageRef image = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return image;
+}
+
+static dispatch_queue_t waReflectionQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("wave.reflection", DISPATCH_QUEUE_SERIAL); });
+    return queue;
 }
 
 static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, CGFloat *sideOut, CGFloat *rowHOut, CGFloat *totalOut) {
@@ -399,6 +412,10 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
     return self;
 }
 
+- (void)dealloc {
+    [[waSession shared] cancelArtworkForOwner:self];
+}
+
 - (void)setHighlighted:(BOOL)highlighted {
     [super setHighlighted:highlighted];
     self.plate.alpha = highlighted ? 0.55 : 1.0;
@@ -438,7 +455,7 @@ static NSCache *waReflectionCache(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 96;
+        cache.countLimit = 24;
     });
     return cache;
 }
@@ -454,17 +471,23 @@ static NSCache *waReflectionCache(void) {
         }
         self.reflectionView.image = nil;
         waItem *requested = self.item;
-        // Read the screen on the main thread: UIScreen is not ours to query
-        // from the drawing queue.
+        CGImageRef source = image.CGImage;
+        if (!source) return;
+        CFRetain(source);
+        CGFloat width = image.size.width;
+        CGFloat imageHeight = image.size.height;
         CGFloat scale = [UIScreen mainScreen].scale;
         __weak waCoverView *weakSelf = self;
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-            UIImage *reflection = waReflection(image, 16.0, scale);
-            if (!reflection) return;
-            [waReflectionCache() setObject:reflection forKey:key];
+        dispatch_async(waReflectionQueue(), ^{
+            CGImageRef baked = waReflectionImage(source, width, imageHeight, 16.0, scale);
+            CFRelease(source);
+            if (!baked) return;
             dispatch_async(dispatch_get_main_queue(), ^{
+                UIImage *reflection = [UIImage imageWithCGImage:baked scale:scale orientation:UIImageOrientationUp];
+                CGImageRelease(baked);
                 waCoverView *strongSelf = weakSelf;
                 if (!strongSelf || strongSelf.item != requested) return;
+                [waReflectionCache() setObject:reflection forKey:key];
                 strongSelf.reflectionView.image = reflection;
             });
         });
