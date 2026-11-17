@@ -29,10 +29,8 @@
 
 - (id)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
-        // Grouped cells draw their own rounded fill. A white opaque background
-        // here is a square that sticks out past those corners.
-        self.backgroundColor = [UIColor clearColor];
-        self.opaque = NO;
+        // Don't touch the cell background. A grouped table installs the rounded
+        // fill itself; setting a color here either covers it or removes it.
         self.contentView.backgroundColor = [UIColor clearColor];
         self.contentView.opaque = NO;
         self.textLabel.backgroundColor = [UIColor clearColor];
@@ -95,6 +93,9 @@
     [super layoutSubviews];
     // super puts the labels back at the stock inset on every pass. Skipping
     // this when the size matches leaves the title under the artwork.
+    // Clear only once the table has installed the rounded background view,
+    // so the white of the cell does not square off its corners.
+    if (self.backgroundView) self.backgroundColor = [UIColor clearColor];
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
     CGFloat height = CGRectGetHeight(self.contentView.bounds);
     BOOL hasArt = (self.artworkView.image != nil) || (self.expectedArtworkURL.length > 0);
