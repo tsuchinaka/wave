@@ -9,6 +9,10 @@
 @property (nonatomic, assign) CGFloat cachedBadgeWidth;
 @property (nonatomic, copy) NSString *cachedIndexText;
 @property (nonatomic, assign) CGFloat cachedIndexWidth;
+@property (nonatomic, assign) CGFloat cachedWidth;
+@property (nonatomic, assign) CGFloat cachedHeight;
+@property (nonatomic, assign) BOOL cachedHasArt;
+@property (nonatomic, assign) BOOL cachedHasIndex;
 @end
 
 @implementation waCell
@@ -30,6 +34,9 @@
 - (id)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
         self.backgroundColor = [UIColor whiteColor];
+        self.opaque = YES;
+        self.contentView.backgroundColor = [UIColor whiteColor];
+        self.contentView.opaque = YES;
         self.textLabel.backgroundColor = [UIColor clearColor];
         self.detailTextLabel.backgroundColor = [UIColor clearColor];
         [waSkin applyPlainCellFonts:self];
@@ -90,6 +97,12 @@
     [super layoutSubviews];
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
     CGFloat height = CGRectGetHeight(self.contentView.bounds);
+    BOOL hasArt = (self.artworkView.image != nil) || (self.expectedArtworkURL.length > 0);
+    BOOL hasIndex = !self.indexLabel.hidden;
+    if (fabs(width - self.cachedWidth) < 0.5 && fabs(height - self.cachedHeight) < 0.5 &&
+        hasArt == self.cachedHasArt && hasIndex == self.cachedHasIndex) return;
+    self.cachedWidth = width; self.cachedHeight = height;
+    self.cachedHasArt = hasArt; self.cachedHasIndex = hasIndex;
     self.textLabel.lineBreakMode = UILineBreakModeTailTruncation;
     self.detailTextLabel.lineBreakMode = UILineBreakModeTailTruncation;
     self.textLabel.numberOfLines = 1;
@@ -110,7 +123,7 @@
     CGFloat explicitWidth = self.explicitView.hidden ? 0.0 : 16.0;
     CGFloat markW = self.downloadedMark ? 14.0 : 0.0;
     self.downloadedView.hidden = !self.downloadedMark;
-    BOOL showsArt = (self.artworkView.image != nil) || (self.expectedArtworkURL.length > 0);
+    BOOL showsArt = hasArt;
     if (showsArt) {
         CGFloat side = height - 10.0;
         if (side < 34.0) side = 34.0;
@@ -171,6 +184,10 @@
     self.accessoryType = UITableViewCellAccessoryNone;
     self.textLabel.text = nil;
     self.detailTextLabel.text = nil;
+    self.cachedWidth = 0.0;
+    self.cachedHeight = 0.0;
+    self.cachedBadgeWidth = 0.0;
+    self.cachedIndexWidth = 0.0;
 }
 
 - (void)loadArtworkForURL:(NSString *)url size:(CGSize)size {

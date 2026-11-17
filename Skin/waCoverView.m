@@ -21,6 +21,73 @@ static UIImage *waPaperFill(void) {
     return image;
 }
 
+
+static NSMutableDictionary *waCoverChromeCache(void) {
+    static NSMutableDictionary *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSMutableDictionary dictionary]; });
+    return cache;
+}
+
+// Baked once at screen scale. The gloss used to be a drawRect with two
+// gradients and two strokes; the shadow was a live CALayer. Both forced
+// software rasterization / offscreen compositing on the A4 GPU per cover.
+static UIImage *waCoverGloss(CGFloat side) {
+    NSUInteger key = (NSUInteger)(side + 0.5);
+    NSString *name = [NSString stringWithFormat:@"g%lu", (unsigned long)key];
+    NSMutableDictionary *cache = waCoverChromeCache();
+    UIImage *img = [cache objectForKey:name];
+    if (img) return img;
+    CGSize size = CGSizeMake((CGFloat)key, (CGFloat)key);
+    UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGFloat gloss[] = {1,1,1,0.42, 1,1,1,0.05, 1,1,1,0.0};
+    CGFloat stops[] = {0.0, 0.42, 1.0};
+    CGGradientRef band = CGGradientCreateWithColorComponents(space, gloss, stops, 3);
+    CGContextDrawLinearGradient(ctx, band, CGPointZero, CGPointMake(0.0, size.height * 0.5), 0);
+    CGGradientRelease(band);
+    CGFloat bevel[] = {0,0,0,0, 0,0,0,0.20};
+    CGFloat bstops[] = {0.0, 1.0};
+    CGGradientRef shade = CGGradientCreateWithColorComponents(space, bevel, bstops, 2);
+    CGContextDrawLinearGradient(ctx, shade, CGPointMake(0.0, size.height - 12.0), CGPointMake(0.0, size.height), 0);
+    CGGradientRelease(shade);
+    CGColorSpaceRelease(space);
+    CGRect box = CGRectMake(0.0, 0.0, size.width, size.height);
+    [[UIColor colorWithWhite:1.0 alpha:0.80] setStroke];
+    UIBezierPath *inner = [UIBezierPath bezierPathWithRect:CGRectInset(box, 1.5, 1.5)];
+    inner.lineWidth = 1.0; [inner stroke];
+    [[UIColor colorWithWhite:0.0 alpha:0.28] setStroke];
+    UIBezierPath *outer = [UIBezierPath bezierPathWithRect:CGRectInset(box, 0.5, 0.5)];
+    outer.lineWidth = 1.0; [outer stroke];
+    img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (img) [cache setObject:img forKey:name];
+    return img;
+}
+
+static UIImage *waCoverShadow(CGFloat side) {
+    NSUInteger key = (NSUInteger)(side + 0.5);
+    NSString *name = [NSString stringWithFormat:@"s%lu", (unsigned long)key];
+    NSMutableDictionary *cache = waCoverChromeCache();
+    UIImage *img = [cache objectForKey:name];
+    if (img) return img;
+    CGFloat m = 8.0;
+    CGSize size = CGSizeMake((CGFloat)key + m * 2.0, (CGFloat)key + m * 2.0);
+    UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGContextSetShadowWithColor(ctx, CGSizeMake(0.0, 1.0), 2.0, [UIColor colorWithWhite:0.0 alpha:0.32].CGColor);
+    [[UIColor whiteColor] setFill];
+    CGContextFillRect(ctx, CGRectMake(m, m, (CGFloat)key, (CGFloat)key));
+    img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (img) {
+        img = [img resizableImageWithCapInsets:UIEdgeInsetsMake(m, m, m, m)];
+        [cache setObject:img forKey:name];
+    }
+    return img;
+}
+
 static UIImage *waReflection(UIImage *image, CGFloat height, CGFloat scale) {
     if (!image || height < 1.0) return nil;
     CGSize size = image.size;
@@ -263,7 +330,8 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
 @interface waCoverView ()
 @property (nonatomic, strong) UIView *plate;
 @property (nonatomic, strong) UIImageView *artView;
-@property (nonatomic, strong) waCoverGlossView *gloss;
+@property (nonatomic, strong) UIImageView *gloss;
+@property (nonatomic, strong) UIImageView *shadowView;
 @property (nonatomic, strong) UIImageView *reflectionView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
@@ -285,10 +353,10 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
         _plate = [[UIView alloc] initWithFrame:CGRectZero];
         _plate.backgroundColor = [UIColor clearColor];
         _plate.userInteractionEnabled = NO;
-        _plate.layer.shadowColor = [UIColor blackColor].CGColor;
-        _plate.layer.shadowOffset = CGSizeMake(0.0, 1.0);
-        _plate.layer.shadowRadius = 2.0;
-        _plate.layer.shadowOpacity = 0.32;
+        _shadowView = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _shadowView.contentMode = UIViewContentModeScaleToFill;
+        _shadowView.userInteractionEnabled = NO;
+        [self addSubview:_shadowView];
         [self addSubview:_plate];
 
         _artView = [[UIImageView alloc] initWithFrame:CGRectZero];
@@ -298,7 +366,9 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
         _artView.backgroundColor = [UIColor colorWithWhite:0.86 alpha:1.0];
         [_plate addSubview:_artView];
 
-        _gloss = [[waCoverGlossView alloc] initWithFrame:CGRectZero];
+        _gloss = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _gloss.contentMode = UIViewContentModeScaleToFill;
+        _gloss.userInteractionEnabled = NO;
         [_plate addSubview:_gloss];
 
         _reflectionView = [[UIImageView alloc] initWithFrame:CGRectZero];
@@ -325,16 +395,12 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
         _subtitleLabel.lineBreakMode = UILineBreakModeTailTruncation;
         [self addSubview:_subtitleLabel];
 
-        // One bitmap per cover. Live shadows on a scrolling strip stall an iPhone 4.
-        self.layer.shouldRasterize = YES;
-        self.layer.rasterizationScale = [UIScreen mainScreen].scale;
     }
     return self;
 }
 
 - (void)setHighlighted:(BOOL)highlighted {
     [super setHighlighted:highlighted];
-    self.layer.shouldRasterize = !highlighted;
     self.plate.alpha = highlighted ? 0.55 : 1.0;
     self.reflectionView.alpha = highlighted ? 0.35 : 1.0;
 }
@@ -453,16 +519,12 @@ static NSCache *waReflectionCache(void) {
     self.plate.frame = CGRectMake(0.0, 2.0, side, side);
     self.artView.frame = self.plate.bounds;
     self.gloss.frame = self.plate.bounds;
+    self.gloss.image = waCoverGloss(side);
+    self.shadowView.frame = CGRectMake(-8.0, -6.0, side + 16.0, side + 16.0);
+    self.shadowView.image = waCoverShadow(side);
     self.reflectionView.frame = CGRectMake(2.0, 2.0 + side, side - 4.0, 16.0);
     self.titleLabel.frame = CGRectMake(0.0, 2.0 + side + 18.0, w, 16.0);
     self.subtitleLabel.frame = CGRectMake(0.0, 2.0 + side + 34.0, w, 14.0);
-    // One bitmap per cover. Rebuilding the shadow path on every pass threw
-    // that bitmap away and re-rasterized the whole card while scrolling.
-    CGSize plateSize = self.plate.bounds.size;
-    if (!CGSizeEqualToSize(plateSize, self.shadowSize)) {
-        self.shadowSize = plateSize;
-        self.plate.layer.shadowPath = [UIBezierPath bezierPathWithRect:self.plate.bounds].CGPath;
-    }
 }
 
 @end
