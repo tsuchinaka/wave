@@ -9,10 +9,6 @@
 @property (nonatomic, assign) CGFloat cachedBadgeWidth;
 @property (nonatomic, copy) NSString *cachedIndexText;
 @property (nonatomic, assign) CGFloat cachedIndexWidth;
-@property (nonatomic, assign) CGFloat cachedWidth;
-@property (nonatomic, assign) CGFloat cachedHeight;
-@property (nonatomic, assign) BOOL cachedHasArt;
-@property (nonatomic, assign) BOOL cachedHasIndex;
 @end
 
 @implementation waCell
@@ -97,14 +93,11 @@
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+    // super puts the labels back at the stock inset on every pass. Skipping
+    // this when the size matches leaves the title under the artwork.
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
     CGFloat height = CGRectGetHeight(self.contentView.bounds);
     BOOL hasArt = (self.artworkView.image != nil) || (self.expectedArtworkURL.length > 0);
-    BOOL hasIndex = !self.indexLabel.hidden;
-    if (fabs(width - self.cachedWidth) < 0.5 && fabs(height - self.cachedHeight) < 0.5 &&
-        hasArt == self.cachedHasArt && hasIndex == self.cachedHasIndex) return;
-    self.cachedWidth = width; self.cachedHeight = height;
-    self.cachedHasArt = hasArt; self.cachedHasIndex = hasIndex;
     self.textLabel.lineBreakMode = UILineBreakModeTailTruncation;
     self.detailTextLabel.lineBreakMode = UILineBreakModeTailTruncation;
     self.textLabel.numberOfLines = 1;
@@ -190,8 +183,6 @@
     self.accessoryType = UITableViewCellAccessoryNone;
     self.textLabel.text = nil;
     self.detailTextLabel.text = nil;
-    self.cachedWidth = 0.0;
-    self.cachedHeight = 0.0;
     self.cachedBadgeWidth = 0.0;
     self.cachedIndexWidth = 0.0;
 }
