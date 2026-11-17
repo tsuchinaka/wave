@@ -76,6 +76,7 @@
 @property (nonatomic, assign) CGFloat cachedBadgeWidth;
 @property (nonatomic, copy) NSString *cachedIndexText;
 @property (nonatomic, assign) CGFloat cachedIndexWidth;
+@property (nonatomic, strong) id artTicket;
 @end
 
 @implementation waCell
@@ -251,13 +252,19 @@
     self.badgeLabel.frame = CGRectMake(width - durationW - 6.0, 0.0, durationW, height);
 }
 
+- (id)freshArtTicket {
+    [[waSession shared] cancelArtworkTicket:self.artTicket];
+    self.artTicket = [[waSession shared] artworkTicket];
+    return self.artTicket;
+}
+
 - (void)dealloc {
-    [[waSession shared] cancelArtworkForOwner:self];
+    [[waSession shared] cancelArtworkTicket:self.artTicket];
 }
 
 - (void)prepareForReuse {
     [super prepareForReuse];
-    [[waSession shared] cancelArtworkForOwner:self];
+    [self freshArtTicket];
     self.artworkView.image = nil;
     self.expectedArtworkURL = nil;
     self.badgeLabel.text = nil;
@@ -292,7 +299,8 @@
     }
     if (!url.length) return;
     __weak waCell *weakSelf = self;
-    [[waSession shared] loadArtwork:url size:size owner:self completion:^(UIImage *image) {
+    id ticket = self.artTicket ?: [self freshArtTicket];
+    [[waSession shared] loadArtwork:url size:size ticket:ticket completion:^(UIImage *image) {
         waCell *cell = weakSelf;
         if (!cell || ![cell.expectedArtworkURL isEqualToString:url]) return;
         cell.artworkView.image = image;

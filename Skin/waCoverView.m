@@ -349,6 +349,7 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
 @property (nonatomic, assign) CGSize shadowSize;
+@property (nonatomic, strong) id artTicket;
 @end
 
 @implementation waCoverView
@@ -412,8 +413,14 @@ static void waGridMetrics(CGFloat width, NSUInteger count, NSUInteger *colsOut, 
     return self;
 }
 
+- (id)freshArtTicket {
+    [[waSession shared] cancelArtworkTicket:self.artTicket];
+    self.artTicket = [[waSession shared] artworkTicket];
+    return self.artTicket;
+}
+
 - (void)dealloc {
-    [[waSession shared] cancelArtworkForOwner:self];
+    [[waSession shared] cancelArtworkTicket:self.artTicket];
 }
 
 - (void)setHighlighted:(BOOL)highlighted {
@@ -506,7 +513,7 @@ static NSCache *waReflectionCache(void) {
     BOOL painted = self.artView.image != nil && self.artView.image != waPaperFill();
     if (sameItem && painted) return;
     BOOL same = sameItem && painted;
-    if (!same) [[waSession shared] cancelArtworkForOwner:self];
+    if (!same) [self freshArtTicket];
     _item = item;
     _artworkSide = side;
     self.titleLabel.text = item.title.length ? item.title : @"";
@@ -522,7 +529,8 @@ static NSCache *waReflectionCache(void) {
             if (url.length) {
                 __weak waCoverView *weakSelf = self;
                 NSString *copy = [url copy];
-                [[waSession shared] loadArtwork:copy size:size owner:self completion:^(UIImage *loaded) {
+                id ticket = self.artTicket ?: [self freshArtTicket];
+                [[waSession shared] loadArtwork:copy size:size ticket:ticket completion:^(UIImage *loaded) {
                     waCoverView *strongSelf = weakSelf;
                     if (!strongSelf) return;
                     if (![[strongSelf artworkURL] isEqualToString:copy]) return;

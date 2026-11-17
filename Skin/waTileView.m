@@ -1,6 +1,10 @@
 #import "waTileView.h"
 #import "waSession.h"
 
+@interface waTileView ()
+@property (nonatomic, strong) id artTicket;
+@end
+
 @implementation waTileView
 
 + (CGFloat)heightForArtworkSide:(CGFloat)side {
@@ -43,13 +47,19 @@
     return self;
 }
 
+- (id)freshArtTicket {
+    [[waSession shared] cancelArtworkTicket:self.artTicket];
+    self.artTicket = [[waSession shared] artworkTicket];
+    return self.artTicket;
+}
+
 - (void)dealloc {
-    [[waSession shared] cancelArtworkForOwner:self];
+    [[waSession shared] cancelArtworkTicket:self.artTicket];
 }
 
 - (void)configureWithItem:(waItem *)item {
     BOOL same = (_item == item && self.artworkView.image != nil);
-    if (!same) [[waSession shared] cancelArtworkForOwner:self];
+    if (!same) [self freshArtTicket];
     _item = item;
     self.titleLabel.text = item.title.length ? item.title : @"";
     NSString *sub = @"";
@@ -90,7 +100,8 @@
     if (!url.length) return;
     __weak waTileView *weakSelf = self;
     NSString *copy = [url copy];
-    [[waSession shared] loadArtwork:copy size:size owner:self completion:^(UIImage *image) {
+    id ticket = self.artTicket ?: [self freshArtTicket];
+    [[waSession shared] loadArtwork:copy size:size ticket:ticket completion:^(UIImage *image) {
         waTileView *strongSelf = weakSelf;
         if (!strongSelf) return;
         if (![[strongSelf artworkURL] isEqualToString:copy]) return;

@@ -129,11 +129,17 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
     return result;
 }
 
+@interface waImageTicket : NSObject
+@property (atomic, assign) BOOL cancelled;
+@end
+
+@implementation waImageTicket
+@end
+
 @interface waImageWaiter : NSObject
 @property (nonatomic, assign) NSInteger pixel;
-@property (nonatomic, assign) void *owner;
+@property (nonatomic, strong) waImageTicket *ticket;
 @property (nonatomic, copy) void (^completion)(UIImage *);
-@property (nonatomic, assign) BOOL cancelled;
 @end
 
 @implementation waImageWaiter
@@ -291,7 +297,7 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
 
     waImageWaiter *waiter = [[waImageWaiter alloc] init];
     waiter.pixel = pixel;
-    waiter.owner = (__bridge void *)owner;
+    waiter.ticket = [owner isKindOfClass:[waImageTicket class]] ? owner : nil;
     waiter.completion = completion;
 
     NSString *hash = waImageHash(url);
@@ -394,7 +400,7 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
         [strongSelf.jobs removeObjectForKey:job.key.length ? job.key : job.url];
         BOOL wanted = NO;
         for (waImageWaiter *waiter in waiters) {
-            if (!waiter.cancelled) { wanted = YES; break; }
+            if (!waiter.ticket.cancelled) { wanted = YES; break; }
         }
         // The view already left. Decoding anyway is what kept the CPU busy
         // and the bitmaps alive after Search or an artist was popped.
@@ -402,14 +408,14 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
         if (!data.length) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 for (waImageWaiter *waiter in waiters) {
-                    if (!waiter.cancelled && waiter.completion) waiter.completion(nil);
+                    if (!waiter.ticket.cancelled && waiter.completion) waiter.completion(nil);
                 }
             });
             return;
         }
         NSMutableDictionary *byPixel = [NSMutableDictionary dictionary];
         for (waImageWaiter *waiter in waiters) {
-            if (waiter.cancelled) continue;
+            if (waiter.ticket.cancelled) continue;
             NSNumber *key = [NSNumber numberWithInteger:waiter.pixel];
             NSMutableArray *group = [byPixel objectForKey:key];
             if (!group) {
@@ -424,7 +430,7 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
             [strongSelf.decodeQueue addOperationWithBlock:^{
                 BOOL stillWanted = NO;
                 for (waImageWaiter *waiter in group) {
-                    if (!waiter.cancelled) { stillWanted = YES; break; }
+                    if (!waiter.ticket.cancelled) { stillWanted = YES; break; }
                 }
                 if (!stillWanted) return;
                 NSInteger pixel = [key integerValue];
@@ -438,7 +444,7 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
                 }
                 dispatch_async(dispatch_get_main_queue(), ^{
                     for (waImageWaiter *waiter in group) {
-                        if (!waiter.cancelled && waiter.completion) waiter.completion(image);
+                        if (!waiter.ticket.cancelled && waiter.completion) waiter.completion(image);
                     }
                 });
             }];
@@ -450,22 +456,20 @@ static UIImage *waDecodeJPEG(NSData *data, NSInteger maxPixel, CGFloat scale) {
     [self.memory removeAllObjects];
 }
 
+- (id)artworkTicket {
+    return [[waImageTicket alloc] init];
+}
+
+- (void)cancelTicket:(id)ticket {
+    if ([ticket isKindOfClass:[waImageTicket class]]) ((waImageTicket *)ticket).cancelled = YES;
+}
+
+- (void)loadImageAtURL:(NSString *)url size:(CGSize)size ticket:(id)ticket completion:(void (^)(UIImage *))completion {
+    [self loadImageAtURL:url size:size owner:ticket completion:completion];
+}
+
 - (void)cancelRequestsForOwner:(id)owner {
-    if (!owner) return;
-    __weak waImageCache *weakSelf = self;
-    dispatch_async(self.lockQueue, ^{
-        waImageCache *strongSelf = weakSelf;
-        if (!strongSelf) return;
-        NSArray *jobs = [strongSelf.jobs allValues];
-        for (waImageJob *job in jobs) {
-            if (![job isKindOfClass:[waImageJob class]]) continue;
-            NSArray *waiters = [job.waiters copy];
-            for (waImageWaiter *waiter in waiters) {
-                if (![waiter isKindOfClass:[waImageWaiter class]]) continue;
-                if (waiter.owner == (__bridge void *)owner) waiter.cancelled = YES;
-            }
-        }
-    });
+    [self cancelTicket:owner];
 }
 
 - (void)sweepDiskIfNeeded {

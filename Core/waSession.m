@@ -1603,6 +1603,18 @@ static NSError *waErr(NSString *message, NSInteger code) {
     [[waImageCache shared] cancelRequestsForOwner:owner];
 }
 
+- (id)artworkTicket {
+    return [[waImageCache shared] artworkTicket];
+}
+
+- (void)cancelArtworkTicket:(id)ticket {
+    [[waImageCache shared] cancelTicket:ticket];
+}
+
+- (void)loadArtwork:(NSString *)url size:(CGSize)size ticket:(id)ticket completion:(void (^)(UIImage *))completion {
+    [[waImageCache shared] loadImageAtURL:url size:size ticket:ticket completion:completion];
+}
+
 - (UIImage *)cachedArtwork:(NSString *)url size:(CGSize)size {
     return [[waImageCache shared] cachedImageForURL:url size:size];
 }
